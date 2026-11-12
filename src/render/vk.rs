@@ -378,6 +378,7 @@ pub struct PainterVK {
     height:       u32,
     render_pass:  VkHandle,
     views:        Vec<VkHandle,>,
+    images:       Vec<VkHandle,>,
 
     img_ready: Vec<bool,>,
 
@@ -723,6 +724,7 @@ impl PainterVK {
             height: 0,
             render_pass: 0,
             views: Vec::new(),
+            images: Vec::new(),
             img_ready: Vec::new(),
             retired: Retired::default(),
             frame_no: 0,
@@ -1222,7 +1224,13 @@ impl PainterVK {
     }
 
     unsafe fn ensure_swapchain(&mut self, sc: VkHandle, info: SwapchainInfo,) -> bool {
-        if self.swapchain == sc && self.format == info.format && self.width == info.width && self.height == info.height
+        // framebuffers must exist too: a previous rebuild that failed midway
+        // left them empty and has to be retried, not treated as ready
+        if self.swapchain == sc
+            && self.format == info.format
+            && self.width == info.width
+            && self.height == info.height
+            && !self.framebuffers.is_empty()
         {
             return true;
         }
@@ -1237,6 +1245,7 @@ impl PainterVK {
                 self.retired.vk.push((self.frame_no, v, DeferKind::View,),);
             }
 
+            self.images.clear();
             self.img_ready.clear();
             if self.render_pass != 0
             {
@@ -1395,6 +1404,9 @@ impl PainterVK {
             }
             self.framebuffers.push(fb,);
         }
+        // keep the image handles so paint() does not have to re-query the
+        // driver for them on every frame
+        self.images = images;
         log_info!("vk", format!("swapchain views/framebuffers: {}", self.framebuffers.len()));
         true
     }
@@ -2059,6 +2071,8 @@ impl PainterVK {
 
                 if (self.f.wait_for_fences)(self.device, 1, fences.as_ptr(), 1, 8_000_000,) != 0
                 {
+                    // keep the uploads for the next frame instead of losing them
+                    self.pending = uploads;
                     return None;
                 }
             }
@@ -2082,6 +2096,10 @@ impl PainterVK {
         (self.f.reset_command_buffer)(cmd, 0,);
         if (self.f.begin_command_buffer)(cmd, &bi as *const _ as *const c_void,) != 0
         {
+            // the fence was reset but will never be signaled; clear in_flight
+            // so later frames do not block on it, and retry the uploads
+            self.pending = uploads;
+            self.frames[slot].in_flight = false;
             return None;
         }
 
@@ -2273,6 +2291,7 @@ impl PainterVK {
                     .ensure_frame_buffers(slot, batch.vertex_bytes().len() as u64, batch.index_bytes().len() as u64,)
                 {
                     self.pending = uploads;
+                    self.frames[slot].in_flight = false;
                     return None;
                 }
                 self.write_buffer(&self.frames[slot].vbo, batch.vertex_bytes(),);
@@ -2399,6 +2418,9 @@ impl PainterVK {
 
         if (self.f.end_command_buffer)(cmd,) != 0
         {
+            // nothing was submitted; do not leave the reset fence pending
+            self.pending = uploads;
+            self.frames[slot].in_flight = false;
             return None;
         }
 
@@ -2436,6 +2458,7 @@ impl PainterVK {
             }
 
             self.pending = uploads;
+            self.frames[slot].in_flight = false;
             return None;
         }
         self.frames[slot].in_flight = true;
@@ -2443,18 +2466,7 @@ impl PainterVK {
     }
 
     unsafe fn swapchain_image(&self, index: u32,) -> Option<VkHandle,> {
-        let mut count = 0u32;
-        if (self.f.get_swapchain_images)(self.device, self.swapchain, &mut count, std::ptr::null_mut(),) != 0
-            || count == 0
-        {
-            return None;
-        }
-        let mut images = vec![0 as VkHandle; count as usize];
-        if (self.f.get_swapchain_images)(self.device, self.swapchain, &mut count, images.as_mut_ptr(),) != 0
-        {
-            return None;
-        }
-        images.get(index as usize,).copied()
+        self.images.get(index as usize,).copied()
     }
 
     unsafe fn bind_texture_set(&mut self, key: u64,) -> bool {

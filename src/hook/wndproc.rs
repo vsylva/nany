@@ -90,19 +90,10 @@ unsafe extern "system" fn wnd_proc(hwnd: win::Hwnd, msg: u32, w: usize, l: isize
 
 #[inline]
 unsafe fn map_vkey(wparam: u32, lparam: usize,) -> i32 {
-    if wparam as i32 == VK_SHIFT
-    {
-        let _ = lparam;
-        return VK_SHIFT;
-    }
-    if wparam as i32 == VK_CONTROL
-    {
-        return if lparam & 0x0100_0000 != 0 { VK_RCONTROL } else { VK_LCONTROL };
-    }
-    if wparam as i32 == VK_MENU
-    {
-        return if lparam & 0x0100_0000 != 0 { VK_RMENU } else { VK_LMENU };
-    }
+    // SHIFT/CONTROL/MENU must be recorded under their generic VK codes so
+    // input::modifiers() sees them; handle_input() additionally tracks the
+    // left/right variants via GetKeyState.
+    let _ = lparam;
     wparam as i32
 }
 
@@ -274,7 +265,8 @@ unsafe fn handle(hwnd: win::Hwnd, msg: u32, w: usize, l: isize,) -> isize {
                 return 1;
             }
         }
-        WM_IME_SETCONTEXT => {}
+        WM_IME_SETCONTEXT =>
+        {}
 
         win::WM_SIZE =>
         {

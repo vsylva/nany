@@ -351,9 +351,15 @@ impl Input {
 
         if !active
         {
+            // only announce the pointer loss once, on the transition; a
+            // PointerGone every frame would force a full egui pass per frame
+            let had_cursor = self.cursor.is_some();
             self.cursor = None;
             let _ = drain(false,);
-            ev.push(Event::PointerGone,);
+            if had_cursor
+            {
+                ev.push(Event::PointerGone,);
+            }
             return ev;
         }
 

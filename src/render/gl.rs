@@ -44,6 +44,8 @@ const GL_DRAW_FRAMEBUFFER: u32 = 0x8CA9;
 const GL_READ_FRAMEBUFFER: u32 = 0x8CA8;
 const GL_POLYGON_MODE: u32 = 0x0B40;
 const GL_FRONT_AND_BACK: u32 = 0x0408;
+const GL_FRONT: u32 = 0x0404;
+const GL_BACK: u32 = 0x0405;
 const GL_FILL: u32 = 0x1B02;
 const GL_PRIMITIVE_RESTART: u32 = 0x8F9D;
 const GL_FRAMEBUFFER_SRGB: u32 = 0x8DB9;
@@ -795,34 +797,39 @@ impl PainterGL {
             draw(GL_TRIANGLES, d.idx_count as i32, GL_UNSIGNED_INT, (d.idx_start as usize * 4) as *const c_void,);
         }
 
-        if let (Some(rp,), Some(ps,),) = (f.read_pixels, f.pixel_storei,)
+        // readback is a debugging aid; the glReadPixels pair forces a GPU
+        // sync, so it must never run when logging is compiled out
+        if crate::log::ENABLED
         {
-            let now = crate::overlay::now_ms();
-            if now.saturating_sub(self.diag_last_read_ms,) >= 2000
+            if let (Some(rp,), Some(ps,),) = (f.read_pixels, f.pixel_storei,)
             {
-                self.diag_last_read_ms = now;
-                ps(GL_PACK_ALIGNMENT, 1,);
-                let mut a = [0u8; 4];
-                let mut b = [0u8; 4];
-                let (cx, cy,) = (self.size.0 as i32 / 2, self.size.1 as i32 / 2,);
-                let (qx, qy,) = (self.size.0.min(200,) as i32, self.size.1.min(300,) as i32,);
-                rp(cx, cy, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, a.as_mut_ptr() as *mut c_void,);
-                rp(qx, qy, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b.as_mut_ptr() as *mut c_void,);
-                ps(GL_UNPACK_ALIGNMENT, saved_unpack_align,);
-                let black = |p: [u8; 4]| (p[0] | p[1] | p[2]) == 0;
-                log_info!(
-                    "gl",
-                    format!(
-                        "readback center=#{:02X}{:02X}{:02X} corner=#{:02X}{:02X}{:02X} -> {}",
-                        a[0],
-                        a[1],
-                        a[2],
-                        b[0],
-                        b[1],
-                        b[2],
-                        if black(a) && black(b) { "ALL-BLACK (our draw did not land)" } else { "ok" }
-                    )
-                );
+                let now = crate::overlay::now_ms();
+                if now.saturating_sub(self.diag_last_read_ms,) >= 2000
+                {
+                    self.diag_last_read_ms = now;
+                    ps(GL_PACK_ALIGNMENT, 1,);
+                    let mut a = [0u8; 4];
+                    let mut b = [0u8; 4];
+                    let (cx, cy,) = (self.size.0 as i32 / 2, self.size.1 as i32 / 2,);
+                    let (qx, qy,) = (self.size.0.min(200,) as i32, self.size.1.min(300,) as i32,);
+                    rp(cx, cy, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, a.as_mut_ptr() as *mut c_void,);
+                    rp(qx, qy, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b.as_mut_ptr() as *mut c_void,);
+                    ps(GL_UNPACK_ALIGNMENT, saved_unpack_align,);
+                    let black = |p: [u8; 4]| (p[0] | p[1] | p[2]) == 0;
+                    log_info!(
+                        "gl",
+                        format!(
+                            "readback center=#{:02X}{:02X}{:02X} corner=#{:02X}{:02X}{:02X} -> {}",
+                            a[0],
+                            a[1],
+                            a[2],
+                            b[0],
+                            b[1],
+                            b[2],
+                            if black(a) && black(b) { "ALL-BLACK (our draw did not land)" } else { "ok" }
+                        )
+                    );
+                }
             }
         }
 
@@ -862,8 +869,17 @@ impl PainterGL {
         }
         if let Some(pm_fn,) = f.polygon_mode
         {
-            let _ = pm;
-            pm_fn(GL_FRONT_AND_BACK, GL_FILL,);
+            // restore the game's polygon modes instead of forcing GL_FILL
+            const GL_POINT_M: u32 = 0x1B00;
+            const GL_LINE_M: u32 = 0x1B01;
+            let mode = |v: i32| match v as u32
+            {
+                GL_POINT_M => GL_POINT_M,
+                GL_LINE_M => GL_LINE_M,
+                _ => GL_FILL,
+            };
+            pm_fn(GL_FRONT, mode(pm[0],),);
+            pm_fn(GL_BACK, mode(pm[1],),);
         }
         Self::set_flag(f, GL_PRIMITIVE_RESTART, saved_restart,);
         Self::set_flag(f, GL_FRAMEBUFFER_SRGB, saved_fb_srgb,);

@@ -1,6 +1,17 @@
 use egui::Event;
 use nany::input;
 
+mod support;
+
+unsafe extern "system" {
+    fn SendMessageW(hwnd: usize, msg: u32, wparam: usize, lparam: isize,) -> isize;
+}
+
+const WM_KEYDOWN: u32 = 0x0100;
+const WM_KEYUP: u32 = 0x0101;
+const VK_CONTROL: i32 = 0x11;
+const VK_MENU: i32 = 0x12;
+
 unsafe fn fake_hwnd() -> nany::win::Hwnd {
     1usize as nany::win::Hwnd
 }
@@ -28,6 +39,29 @@ fn hotkey_survives_inactive_frames() {
         let _ = state.poll(std::ptr::null_mut(), (1280, 720,), false,);
         assert!(input::hotkey(0x2D), "hotkey was swallowed while the ui was inactive");
         assert!(!input::hotkey(0x2D), "hotkey must be consumed exactly once");
+    }
+}
+
+#[test]
+fn wndproc_records_generic_control_and_alt_for_modifiers() {
+    unsafe {
+        let _guard = guard();
+        let win = support::TestWindow::create("mods", 200, 200,).expect("test window",);
+        nany::hook::wndproc::install(win.hwnd,);
+
+        SendMessageW(win.hwnd as usize, WM_KEYDOWN, VK_CONTROL as usize, 0,);
+        assert!(input::held(VK_CONTROL,), "generic VK_CONTROL was never recorded from WM_KEYDOWN");
+        assert!(input::modifiers().ctrl, "ctrl modifier is not visible to egui");
+        SendMessageW(win.hwnd as usize, WM_KEYUP, VK_CONTROL as usize, 0,);
+        assert!(!input::modifiers().ctrl, "ctrl modifier stuck after WM_KEYUP");
+
+        SendMessageW(win.hwnd as usize, WM_KEYDOWN, VK_MENU as usize, 0,);
+        assert!(input::held(VK_MENU,), "generic VK_MENU was never recorded from WM_KEYDOWN");
+        assert!(input::modifiers().alt, "alt modifier is not visible to egui");
+        SendMessageW(win.hwnd as usize, WM_KEYUP, VK_MENU as usize, 0,);
+        assert!(!input::modifiers().alt, "alt modifier stuck after WM_KEYUP");
+
+        nany::hook::wndproc::uninstall();
     }
 }
 

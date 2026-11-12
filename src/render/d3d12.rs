@@ -916,11 +916,8 @@ impl Painter12 {
         for p in &patches
         {
             let pitch = ((p.w as u64) + TEX_PITCH_ALIGN - 1) & !(TEX_PITCH_ALIGN - 1);
-            patch_bytes += (pitch * p.h as u64 + TEX_PLACE_ALIGN - 1) & !(TEX_PLACE_ALIGN - 1);
-        }
-        if !patches.is_empty()
-        {
-            patch_bytes += TEX_PLACE_ALIGN;
+            // + TEX_PLACE_ALIGN covers the offset alignment upload_slice applies per rect
+            patch_bytes += ((pitch * p.h as u64 + TEX_PLACE_ALIGN - 1) & !(TEX_PLACE_ALIGN - 1)) + TEX_PLACE_ALIGN;
         }
         let geo_bytes = if batch.is_empty()
         {
@@ -928,7 +925,9 @@ impl Painter12 {
         }
         else
         {
-            batch.vertex_bytes().len() as u64 + batch.index_bytes().len() as u64 + 512
+            // upload_bytes rounds every chunk up to 256 bytes; reserve with
+            // the same rounding so the ring is never written past its end
+            ((batch.vertex_bytes().len() as u64 + 255) & !255) + ((batch.index_bytes().len() as u64 + 255) & !255) + 256
         };
         let need = patch_bytes + geo_bytes;
         if need > 0 && !self.reserve_upload(need,)

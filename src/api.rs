@@ -160,7 +160,8 @@ unsafe fn cstr_eq(addr: usize, want: &[u8],) -> bool {
             return false;
         }
     }
-    true
+    // require the terminator so "Name" does not prefix-match "NameEx"
+    *(addr as *const u8).add(want.len(),) == 0
 }
 
 pub unsafe fn export_addr(base: usize, name: &[u8],) -> usize {
