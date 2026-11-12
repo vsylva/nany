@@ -9,6 +9,8 @@ static HOOKED_HWND: AtomicUsize = AtomicUsize::new(0,);
 static STATE: AtomicBool = AtomicBool::new(false,);
 
 const WM_MOUSEHWHEEL: u32 = 0x020E;
+const WM_MOUSELEAVE: u32 = 0x02A3;
+const WM_SYSCHAR: u32 = 0x0106;
 
 const WM_IME_SETCONTEXT: u32 = 0x0281;
 const WM_IME_CHAR: u32 = 0x0286;
@@ -67,19 +69,24 @@ unsafe fn swallow(msg: u32,) -> bool {
             | win::WM_SYSKEYDOWN
             | win::WM_SYSKEYUP
             | win::WM_CHAR
+            | WM_SYSCHAR
             | WM_IME_CHAR
             | WM_UNICHAR
             | win::WM_MOUSEMOVE
             | win::WM_LBUTTONDOWN
             | win::WM_LBUTTONUP
+            | WM_LBUTTONDBLCLK
             | win::WM_RBUTTONDOWN
             | win::WM_RBUTTONUP
+            | WM_RBUTTONDBLCLK
             | win::WM_MBUTTONDOWN
             | win::WM_MBUTTONUP
+            | WM_MBUTTONDBLCLK
             | win::WM_MOUSEWHEEL
             | WM_MOUSEHWHEEL
             | win::WM_XBUTTONDOWN
             | win::WM_XBUTTONUP
+            | WM_XBUTTONDBLCLK
             | win::WM_INPUT
     )
 }
@@ -212,7 +219,30 @@ unsafe fn handle(hwnd: win::Hwnd, msg: u32, w: usize, l: isize,) -> isize {
 
         win::WM_MOUSEMOVE =>
         {
+            if open
+            {
+                // arm WM_MOUSELEAVE tracking so egui sees the pointer leave
+                win::arm_mouse_leave(hwnd,);
+            }
             input::on_mouse_move(lowordi(l as u32,) as i32, hiwordi(l as u32,) as i32,);
+        }
+
+        WM_MOUSELEAVE =>
+        {
+            input::on_mouse_leave();
+        }
+
+        win::WM_SETFOCUS =>
+        {
+            input::on_focus(true,);
+            input::clear_keys();
+        }
+        win::WM_KILLFOCUS =>
+        {
+            // keys cannot stay held while the window is unfocused
+            input::on_focus(false,);
+            input::clear_keys();
+            input::clear_buttons();
         }
 
         win::WM_CHAR =>

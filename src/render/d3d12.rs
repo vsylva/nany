@@ -110,6 +110,7 @@ pub struct Painter12 {
     upload_size:    u64,
     upload_off:     u64,
     retire:         Vec<(u64, Vec<ID3D12Resource,>,),>,
+    retire_pso:     Vec<(u64, ID3D12PipelineState,),>,
     size:           (u32, u32,),
     format:         DXGI_FORMAT,
     warned:         bool,
@@ -363,6 +364,7 @@ impl Painter12 {
             upload_size: UPLOAD_MIN,
             upload_off: 0,
             retire: Vec::new(),
+            retire_pso: Vec::new(),
             size: (0, 0,),
             format,
             warned: false,
@@ -758,7 +760,10 @@ impl Painter12 {
         {
             if let Ok(pso,) = Self::create_pso(&self.device, &self.root, format,)
             {
-                self.pso = pso;
+                let old = std::mem::replace(&mut self.pso, pso,);
+                // in-flight command lists still reference the old pipeline;
+                // d3d12 requires the app to keep it alive until they finished
+                self.retire_pso.push((self.fence_value + 1, old,),);
                 self.pso_format = format;
                 log_info!("d3d12", format!("pso rebuilt for format {}", format.0));
             }
@@ -880,6 +885,7 @@ impl Painter12 {
     unsafe fn record_and_submit(&mut self, sc: &IDXGISwapChain, batch: &Batch,) -> Result<(),> {
         let done = self.fence.GetCompletedValue();
         self.retire.retain(|(v, _,)| *v > done,);
+        self.retire_pso.retain(|(v, _,)| *v > done,);
 
         let sc3: IDXGISwapChain3 = sc.cast()?;
         let idx = sc3.GetCurrentBackBufferIndex();

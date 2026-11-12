@@ -2003,6 +2003,13 @@ impl PainterVK {
         {
             cap *= 2;
         }
+        // the staging copy loop is unbounded; a buffer smaller than the
+        // request must be refused, not returned
+        if cap < need
+        {
+            log_error!("vk", format!("staging request of {need} bytes exceeds the 64 MB cap, frame skipped"));
+            return false;
+        }
         match self.make_buffer(cap, BUF_USAGE_TRANSFER_SRC, true,)
         {
             Some(b,) =>

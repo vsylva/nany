@@ -9,6 +9,7 @@ unsafe extern "system" {
 
 const WM_KEYDOWN: u32 = 0x0100;
 const WM_KEYUP: u32 = 0x0101;
+const WM_KILLFOCUS: u32 = 0x0008;
 const VK_CONTROL: i32 = 0x11;
 const VK_MENU: i32 = 0x12;
 
@@ -60,6 +61,29 @@ fn wndproc_records_generic_control_and_alt_for_modifiers() {
         assert!(input::modifiers().alt, "alt modifier is not visible to egui");
         SendMessageW(win.hwnd as usize, WM_KEYUP, VK_MENU as usize, 0,);
         assert!(!input::modifiers().alt, "alt modifier stuck after WM_KEYUP");
+
+        nany::hook::wndproc::uninstall();
+    }
+}
+
+#[test]
+fn kill_focus_releases_held_keys_and_buttons() {
+    unsafe {
+        let _guard = guard();
+        let win = support::TestWindow::create("focus", 200, 200,).expect("test window",);
+        nany::hook::wndproc::install(win.hwnd,);
+
+        SendMessageW(win.hwnd as usize, WM_KEYDOWN, 0x57, 0,);
+        assert!(input::held(0x57,),);
+        input::on_mouse_button(0, true,);
+
+        SendMessageW(win.hwnd as usize, WM_KILLFOCUS, 0, 0,);
+        assert!(!input::held(0x57,), "key stuck after WM_KILLFOCUS");
+        assert!(!input::button_down(0,), "button stuck after WM_KILLFOCUS");
+
+        let mut st = input::Input::default();
+        let ev = st.poll(fake_hwnd(), (1280, 720,), true,);
+        assert!(ev.iter().any(|e| matches!(e, Event::WindowFocused(false,))),);
 
         nany::hook::wndproc::uninstall();
     }

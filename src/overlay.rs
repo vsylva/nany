@@ -256,6 +256,8 @@ impl Overlay {
         log_info!("ui", "backend rebuilt, resetting egui context for full texture upload");
         self.ctx = Self::make_ctx();
         self.pending_tex.clear();
+        // the old tessellation references texture ids of the old context
+        self.last_prims = None;
     }
 
     unsafe fn stash_pending(&mut self, deltas: Vec<egui::TexturesDelta,>,) {
@@ -813,6 +815,7 @@ pub unsafe fn on_device_lost(sc_raw: *mut c_void,) {
         st.renderer = Renderer::None;
         st.renderer_failed = false;
         st.pending_tex.clear();
+        st.last_prims = None;
         st.ctx = Overlay::make_ctx();
         if st.note_fail()
         {

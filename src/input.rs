@@ -188,6 +188,19 @@ pub unsafe fn clear_buttons() {
     },);
 }
 
+/// Drop all held-key state, e.g. when the window loses focus and the
+/// corresponding key-up messages will never arrive.
+pub unsafe fn clear_keys() {
+    for a in &HELD_BITS
+    {
+        a.store(0, Ordering::Release,);
+    }
+    with(|s| {
+        s.pending_high = 0;
+        s.last_char = None;
+    },);
+}
+
 pub unsafe fn button_down(idx: u8,) -> bool {
     if idx > 4
     {
@@ -356,6 +369,11 @@ impl Input {
             let had_cursor = self.cursor.is_some();
             self.cursor = None;
             let _ = drain(false,);
+            // consume the one-shot flags so they do not surface as stale
+            // events on the first poll after the ui reopens
+            let _ = POINTER_LEFT.swap(false, Ordering::Relaxed,);
+            let _ = FOCUS_EVENT.swap(0, Ordering::Relaxed,);
+            let _ = CLIP_OP.swap(0, Ordering::Relaxed,);
             if had_cursor
             {
                 ev.push(Event::PointerGone,);
