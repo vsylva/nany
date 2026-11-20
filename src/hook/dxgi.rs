@@ -10,12 +10,13 @@ use windows::{
     Win32::Graphics::{
         Direct3D12::{D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC, ID3D12CommandQueue, ID3D12Device},
         Dxgi::{
-            Common::{DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_MODE_DESC, DXGI_RATIONAL, DXGI_SAMPLE_DESC},
-            DXGI_SWAP_CHAIN_DESC, DXGI_SWAP_EFFECT_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIFactory2,
+            Common::{DXGI_FORMAT, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_MODE_DESC, DXGI_RATIONAL, DXGI_SAMPLE_DESC},
+            DXGI_PRESENT, DXGI_PRESENT_PARAMETERS, DXGI_SWAP_CHAIN_DESC, DXGI_SWAP_EFFECT_DISCARD,
+            DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIFactory2,
             IDXGISwapChain, IDXGISwapChain1, IDXGISwapChain3,
         },
     },
-    core::{GUID, Interface},
+    core::{GUID, HRESULT, Interface, s, w},
 };
 
 use super::detour;
@@ -58,7 +59,8 @@ pub unsafe fn set_queue(q: usize,) {
     QUEUE.store(q, Ordering::Release,);
 }
 
-pub unsafe fn is_device_lost(hr: i32,) -> bool {
+pub unsafe fn is_device_lost(hr: HRESULT,) -> bool {
+    let hr = hr.0;
     hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG
 }
 
@@ -66,19 +68,30 @@ pub unsafe fn installed() -> bool {
     INSTALLED.load(Ordering::Acquire,)
 }
 
-type PresentFn = unsafe extern "system" fn(*mut c_void, u32, u32,) -> i32;
-type Present1Fn = unsafe extern "system" fn(*mut c_void, u32, *const c_void,) -> i32;
-type ResizeFn = unsafe extern "system" fn(*mut c_void, u32, u32, u32, u32, u32,) -> i32;
-type Resize1Fn =
-    unsafe extern "system" fn(*mut c_void, u32, u32, u32, u32, u32, *const u32, *const *mut c_void,) -> i32;
+// Detour signatures are the vtable field types of `IDXGISwapChain_Vtbl` and
+// `ID3D12CommandQueue_Vtbl`, spelled with the same windows-rs types.
+type PresentFn = unsafe extern "system" fn(*mut c_void, u32, DXGI_PRESENT,) -> HRESULT;
+type Present1Fn =
+    unsafe extern "system" fn(*mut c_void, u32, DXGI_PRESENT, *const DXGI_PRESENT_PARAMETERS,) -> HRESULT;
+type ResizeFn = unsafe extern "system" fn(*mut c_void, u32, u32, u32, DXGI_FORMAT, u32,) -> HRESULT;
+type Resize1Fn = unsafe extern "system" fn(
+    *mut c_void,
+    u32,
+    u32,
+    u32,
+    DXGI_FORMAT,
+    u32,
+    *const u32,
+    *const *mut c_void,
+) -> HRESULT;
 type ExecFn = unsafe extern "system" fn(*mut c_void, u32, *const *mut c_void,);
 
-unsafe extern "system" fn detour_present(this: *mut c_void, sync: u32, flags: u32,) -> i32 {
+unsafe extern "system" fn detour_present(this: *mut c_void, sync: u32, flags: DXGI_PRESENT,) -> HRESULT {
     overlay::on_present(this,);
     let orig = ORIG_PRESENT.load(Ordering::Acquire,);
     if orig == 0
     {
-        return 0;
+        return HRESULT(0,);
     }
     let f: PresentFn = std::mem::transmute(orig,);
     let hr = f(this, sync, flags,);
@@ -89,15 +102,20 @@ unsafe extern "system" fn detour_present(this: *mut c_void, sync: u32, flags: u3
     hr
 }
 
-unsafe extern "system" fn detour_present1(this: *mut c_void, sync: u32, params: *const c_void,) -> i32 {
+unsafe extern "system" fn detour_present1(
+    this: *mut c_void,
+    sync: u32,
+    flags: DXGI_PRESENT,
+    params: *const DXGI_PRESENT_PARAMETERS,
+) -> HRESULT {
     overlay::on_present(this,);
     let orig = ORIG_PRESENT1.load(Ordering::Acquire,);
     if orig == 0
     {
-        return 0;
+        return HRESULT(0,);
     }
     let f: Present1Fn = std::mem::transmute(orig,);
-    let hr = f(this, sync, params,);
+    let hr = f(this, sync, flags, params,);
     if is_device_lost(hr,)
     {
         overlay::on_device_lost(this,);
@@ -105,12 +123,19 @@ unsafe extern "system" fn detour_present1(this: *mut c_void, sync: u32, params: 
     hr
 }
 
-unsafe extern "system" fn detour_resize(this: *mut c_void, count: u32, w: u32, h: u32, fmt: u32, flags: u32,) -> i32 {
+unsafe extern "system" fn detour_resize(
+    this: *mut c_void,
+    count: u32,
+    w: u32,
+    h: u32,
+    fmt: DXGI_FORMAT,
+    flags: u32,
+) -> HRESULT {
     overlay::on_resize(this,);
     let orig = ORIG_RESIZE.load(Ordering::Acquire,);
     if orig == 0
     {
-        return 0;
+        return HRESULT(0,);
     }
     let f: ResizeFn = std::mem::transmute(orig,);
     f(this, count, w, h, fmt, flags,)
@@ -158,11 +183,11 @@ unsafe extern "system" fn detour_resize1(
     count: u32,
     w: u32,
     h: u32,
-    fmt: u32,
+    fmt: DXGI_FORMAT,
     flags: u32,
     node_mask: *const u32,
     queues: *const *mut c_void,
-) -> i32 {
+) -> HRESULT {
     let n = resize_buffer_count(this, count,);
     let mask = or_node_masks(node_mask, n,);
     if LAST_NODE_MASK.swap(mask, Ordering::AcqRel,) != mask
@@ -190,7 +215,7 @@ unsafe extern "system" fn detour_resize1(
     let orig = ORIG_RESIZE1.load(Ordering::Acquire,);
     if orig == 0
     {
-        return 0;
+        return HRESULT(0,);
     }
     let f: Resize1Fn = std::mem::transmute(orig,);
     f(this, count, w, h, fmt, flags, node_mask, queues,)
@@ -256,15 +281,15 @@ type CreateDeviceAndSwapChainFn = unsafe extern "system" fn(
 type D3D12CreateDeviceFn = unsafe extern "system" fn(*mut c_void, u32, *const GUID, *mut *mut c_void,) -> i32;
 
 unsafe fn probe_swapchain_d3d12() -> *mut c_void {
-    let class = c"nany_probe_cls2";
-    let title = c"nany probe2";
+    let class = w!("nany_probe_cls2");
+    let title = w!("nany probe2");
     let hwnd = win::create_dummy_window(class, title,);
     if hwnd.is_null()
     {
         return std::ptr::null_mut();
     }
 
-    let raw_dev = crate::api::resolve("d3d12.dll", b"D3D12CreateDevice",);
+    let raw_dev = crate::api::resolve(w!("d3d12.dll"), s!("D3D12CreateDevice"),);
     if raw_dev == 0
     {
         win::destroy_window(hwnd, class,);
@@ -289,7 +314,7 @@ unsafe fn probe_swapchain_d3d12() -> *mut c_void {
         }
     };
 
-    let raw_f = crate::api::resolve("dxgi.dll", b"CreateDXGIFactory2",);
+    let raw_f = crate::api::resolve(w!("dxgi.dll"), s!("CreateDXGIFactory2"),);
     if raw_f == 0
     {
         win::destroy_window(hwnd, class,);
@@ -359,15 +384,15 @@ unsafe fn probe_swapchain_d3d12() -> *mut c_void {
 }
 
 unsafe fn probe_swapchain() -> *mut c_void {
-    let class = c"nany_probe_cls";
-    let title = c"nany probe";
+    let class = w!("nany_probe_cls");
+    let title = w!("nany probe");
     let hwnd = win::create_dummy_window(class, title,);
     if hwnd.is_null()
     {
         log_error!("hook", "probe window creation failed (RegisterClassA/CreateWindowExA)");
         return std::ptr::null_mut();
     }
-    let raw = crate::api::resolve("d3d11.dll", b"D3D11CreateDeviceAndSwapChain",);
+    let raw = crate::api::resolve(w!("d3d11.dll"), s!("D3D11CreateDeviceAndSwapChain"),);
     if raw == 0
     {
         win::destroy_window(hwnd, class,);
@@ -420,7 +445,7 @@ unsafe fn probe_swapchain() -> *mut c_void {
 }
 
 unsafe fn probe_queue() -> *mut c_void {
-    let raw = crate::api::resolve("d3d12.dll", b"D3D12CreateDevice",);
+    let raw = crate::api::resolve(w!("d3d12.dll"), s!("D3D12CreateDevice"),);
     if raw == 0
     {
         log_warn!("hook", "d3d12.dll not loaded, skipping d3d12 queue probe");
@@ -453,7 +478,6 @@ pub unsafe fn install() -> bool {
     {
         return true;
     }
-    crate::api::init();
 
     let mut ok = false;
 

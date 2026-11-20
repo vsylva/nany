@@ -2,26 +2,12 @@
 members = ["."]
 resolver = "2"
 
-[workspace.lints.rust]
-unsafe_op_in_unsafe_fn = "allow"
-
-[workspace.lints.clippy]
-collapsible_if = "allow"
-missing_transmute_annotations = "allow"
-manual_c_str_literals = "allow"
-missing_safety_doc = "allow"
-too_many_arguments = "allow"
-not_unsafe_ptr_arg_deref = "allow"
-
 [package]
 name = "nany"
 version = "0.1.0"
 edition = "2024"
 authors = ["vsylva"]
 license = "MIT"
-
-[lints]
-workspace = true
 
 [lib]
 name = "nany"
@@ -34,6 +20,7 @@ egui = { version = "=0.37.0", default-features = false, features = [
 naly = { git = "https://github.com/vsylva/naly.git" }
 windows = { version = "=0.58.0", default-features = false, features = [
     "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D9",
     "Win32_Graphics_Direct3D11",
@@ -42,13 +29,27 @@ windows = { version = "=0.58.0", default-features = false, features = [
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Gdi",
+    "Win32_Graphics_OpenGL",
+    "Win32_Security",
+    "Win32_System_DataExchange",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
     "Win32_System_Threading",
+    "Win32_UI_Input_Ime",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [build-dependencies]
 naga = { version = "=30.0.1", default-features = false, features = [
     "wgsl-in",
     "spv-out",
+] }
+windows = { version = "=0.58.0", default-features = false, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_System_LibraryLoader",
 ] }
 
 [[example]]

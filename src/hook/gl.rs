@@ -4,8 +4,10 @@ use std::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
+use windows::core::{s, w};
+
 use super::detour;
-use crate::{log_error, log_info, log_warn, overlay, win};
+use crate::{log_error, log_info, log_warn, overlay};
 
 static INSTALLED: AtomicBool = AtomicBool::new(false,);
 static ORIG_WGL_SWAP: AtomicUsize = AtomicUsize::new(0,);
@@ -114,7 +116,7 @@ pub unsafe fn install() -> bool {
     {
         return true;
     }
-    let gl = win::module_base_bytes(b"opengl32.dll\0",);
+    let gl = crate::api::module_base(w!("opengl32.dll"),);
     if gl == 0
     {
         INSTALLED.store(false, Ordering::Release,);
@@ -122,13 +124,13 @@ pub unsafe fn install() -> bool {
     }
     let mut ok = false;
     {
-        let p = win::proc_address(gl as isize, b"wglSwapBuffers\0",) as usize;
+        let p = crate::api::proc_address(gl, s!("wglSwapBuffers"),) as usize;
         ok |= hook_one("wglSwapBuffers", p, detour_wgl_swap as *const () as usize, &ORIG_WGL_SWAP,);
 
-        let gdi = win::module_base_bytes(b"gdi32.dll\0",);
+        let gdi = crate::api::module_base(w!("gdi32.dll"),);
         if gdi != 0
         {
-            let p = win::proc_address(gdi as isize, b"SwapBuffers\0",) as usize;
+            let p = crate::api::proc_address(gdi, s!("SwapBuffers"),) as usize;
             ok |= hook_one("SwapBuffers", p, detour_gdi_swap as *const () as usize, &ORIG_GDI_SWAP,);
         }
     }

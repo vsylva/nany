@@ -1,3 +1,4 @@
+#![allow(unsafe_op_in_unsafe_fn)]
 #![allow(non_snake_case, non_camel_case_types, dead_code, clippy::missing_transmute_annotations)]
 
 mod support;
@@ -346,7 +347,11 @@ struct VkFns {
 }
 
 unsafe fn sym(module: isize, name: &[u8],) -> *const c_void {
-    support::GetProcAddress(module, name.as_ptr(),)
+    let module = windows::Win32::Foundation::HMODULE(module as *mut std::ffi::c_void);
+    match windows::Win32::System::LibraryLoader::GetProcAddress(module, windows::core::PCSTR(name.as_ptr(),),) {
+        Some(f,) => f as *const std::ffi::c_void,
+        None => std::ptr::null(),
+    }
 }
 
 unsafe fn load(vk: isize, instance: VkHandle, gipa: PfnGpa, name: &[u8],) -> *const c_void {
@@ -531,7 +536,9 @@ fn vulkan_survives_window_transitions() {
             }
         };
         eprintln!("[vk] step1 window ok");
-        let module = support::LoadLibraryA(b"vulkan-1.dll\0".as_ptr(),);
+        let module = windows::Win32::System::LibraryLoader::LoadLibraryW(windows::core::w!("vulkan-1.dll"))
+            .map(|h| h.0 as isize)
+            .unwrap_or(0);
         if module == 0
         {
             eprintln!("[vk] vulkan-1.dll not available, skipping");
@@ -575,7 +582,9 @@ fn vulkan_survives_window_transitions() {
         eprintln!("[vk] step3 instance={instance}");
         let create_surface: FnCreateSurface =
             std::mem::transmute(load(module, instance, gipa, b"vkCreateWin32SurfaceKHR\0",),);
-        let inst_h = support::GetModuleHandleW(std::ptr::null(),);
+        let inst_h = windows::Win32::System::LibraryLoader::GetModuleHandleW(windows::core::PCWSTR::null())
+            .map(|h| h.0 as isize)
+            .unwrap_or(0);
         let sci = VkWin32SurfaceCreateInfoKHR {
             s_type:    S_WIN32_SURFACE,
             p_next:    std::ptr::null(),

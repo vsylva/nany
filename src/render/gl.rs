@@ -3,6 +3,8 @@ use std::{
     ffi::{CString, c_void},
 };
 
+use windows::core::{s, w};
+
 use super::mesh::{self, Batch, VERTEX_SIZE};
 use crate::{log_error, log_info, log_warn};
 
@@ -151,24 +153,25 @@ struct Fns {
     read_pixels:                Option<unsafe extern "system" fn(i32, i32, i32, i32, u32, u32, *mut c_void,),>,
 }
 
-unsafe fn resolve<T: Copy,>(module: isize, gpa: Gpa, name: &str,) -> Option<T,> {
+unsafe fn resolve<T: Copy,>(module: usize, gpa: Gpa, name: &str,) -> Option<T,> {
     let c = CString::new(name,).ok()?;
     let mut p = gpa(c.as_ptr() as *const u8,);
     if p.is_null()
     {
-        p = crate::win::proc_address(module, c.as_bytes_with_nul(),);
+        p = crate::api::proc_address(module, windows::core::PCSTR(c.as_ptr() as *const u8),);
     }
     if p.is_null() { None } else { Some(std::mem::transmute_copy(&p,),) }
 }
 
 impl Fns {
     unsafe fn load() -> Option<Self,> {
-        let module = crate::win::load_library_bytes(b"opengl32.dll\0",);
+        // the GL backend only runs inside a process that already presents through wglSwapBuffers
+        let module = crate::api::module_base(w!("opengl32.dll"),);
         if module == 0
         {
             return None;
         }
-        let raw = crate::win::proc_address(module, b"wglGetProcAddress\0",);
+        let raw = crate::api::proc_address(module, s!("wglGetProcAddress"),);
         if raw.is_null()
         {
             return None;

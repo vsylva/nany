@@ -1,3 +1,4 @@
+#![allow(unsafe_op_in_unsafe_fn)]
 //! The registry in front of `naly`: hook, trampoline lookup, unhook, unhook_all.
 
 use std::sync::Mutex;

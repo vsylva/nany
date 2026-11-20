@@ -1,9 +1,31 @@
-#![allow(dead_code, deprecated)]
+#![allow(unsafe_op_in_unsafe_fn)]
+#![allow(dead_code)]
 
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
+
+use windows::{
+    Win32::{
+        Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
+        Graphics::Gdi::UpdateWindow,
+        System::LibraryLoader::GetModuleHandleW,
+        UI::WindowsAndMessaging::{
+            AdjustWindowRect, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWL_STYLE, GetClientRect,
+            GetSystemMetrics, HMENU, HWND_NOTOPMOST, HWND_TOP, MSG, PM_REMOVE, PeekMessageW, RegisterClassW, SM_CXSCREEN,
+            SM_CYSCREEN, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_MINIMIZE, SW_RESTORE, SW_SHOW,
+            SET_WINDOW_POS_FLAGS, SetWindowPos, ShowWindow, TranslateMessage, UnregisterClassW, WINDOW_EX_STYLE, WINDOW_STYLE,
+            WNDCLASSW, WNDCLASS_STYLES, WS_OVERLAPPEDWINDOW, WS_POPUP,
+        },
+    },
+    core::{HSTRING, PCWSTR},
+};
+
+#[cfg(target_arch = "x86_64")]
+use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW};
+#[cfg(target_arch = "x86")]
+use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongW, SetWindowLongW};
 
 pub mod esp;
 pub mod menu;
@@ -12,170 +34,88 @@ use nany::overlay::{Frame, Provider};
 
 pub type Hwnd = *mut std::ffi::c_void;
 
-pub const WS_OVERLAPPEDWINDOW: u32 = 0x00CF_0000;
-pub const WS_POPUP: u32 = 0x8000_0000;
-pub const WS_VISIBLE: u32 = 0x1000_0000;
-pub const SW_SHOW: i32 = 5;
-pub const SW_MINIMIZE: i32 = 6;
-pub const SW_RESTORE: i32 = 9;
-pub const HWND_TOP: isize = 0;
-pub const HWND_NOTOPMOST: isize = -2;
-pub const SWP_NOZORDER: u32 = 0x0004;
-pub const SWP_NOACTIVATE: u32 = 0x0010;
-pub const SWP_FRAMECHANGED: u32 = 0x0020;
-pub const SWP_SHOWWINDOW: u32 = 0x0040;
-pub const GWL_STYLE: i32 = -16;
-
-#[repr(C)]
-pub struct Rect {
-    pub left:   i32,
-    pub top:    i32,
-    pub right:  i32,
-    pub bottom: i32,
+#[cfg(target_arch = "x86_64")]
+unsafe fn style_get(hwnd: HWND,) -> WINDOW_STYLE {
+    WINDOW_STYLE(GetWindowLongPtrW(hwnd, GWL_STYLE,) as u32,)
 }
-
-#[repr(C)]
-pub struct Msg {
-    pub hwnd:    Hwnd,
-    pub message: u32,
-    pub wparam:  usize,
-    pub lparam:  isize,
-    pub time:    u32,
-    pub pt_x:    i32,
-    pub pt_y:    i32,
-}
-
-#[repr(C)]
-pub struct WndClassW {
-    pub style:           u32,
-    pub lpfn_wnd_proc:   Option<unsafe extern "system" fn(Hwnd, u32, usize, isize,) -> isize,>,
-    pub cb_cls_extra:    i32,
-    pub cb_wnd_extra:    i32,
-    pub h_instance:      isize,
-    pub h_icon:          isize,
-    pub h_cursor:        isize,
-    pub hbr_background:  isize,
-    pub lpsz_menu_name:  *const u8,
-    pub lpsz_class_name: *const u8,
-}
-
-unsafe extern "system" {
-    pub fn GetModuleHandleW(name: *const u16,) -> isize;
-    pub fn RegisterClassA(cls: *const WndClassW,) -> u16;
-    pub fn CreateWindowExA(
-        ex_style: u32,
-        class_name: *const u8,
-        window_name: *const u8,
-        style: u32,
-        x: i32,
-        y: i32,
-        w: i32,
-        h: i32,
-        parent: Hwnd,
-        menu: isize,
-        instance: isize,
-        param: *mut std::ffi::c_void,
-    ) -> Hwnd;
-    pub fn DefWindowProcA(h: Hwnd, m: u32, w: usize, l: isize,) -> isize;
-    pub fn ShowWindow(h: Hwnd, cmd: i32,) -> i32;
-    pub fn UpdateWindow(h: Hwnd,) -> i32;
-    pub fn DestroyWindow(h: Hwnd,) -> i32;
-    pub fn AdjustWindowRect(r: *mut Rect, style: u32, menu: i32,) -> i32;
-    pub fn GetClientRect(h: Hwnd, r: *mut Rect,) -> i32;
-    pub fn SetWindowPos(h: Hwnd, after: isize, x: i32, y: i32, cx: i32, cy: i32, flags: u32,) -> i32;
-    // the *Ptr* exports only exist in 64-bit user32; 32-bit code uses the LONG pair
-    #[cfg(target_arch = "x86_64")]
-    pub fn SetWindowLongPtrA(h: Hwnd, index: i32, value: isize,) -> isize;
-    #[cfg(target_arch = "x86_64")]
-    pub fn GetWindowLongPtrA(h: Hwnd, index: i32,) -> isize;
-    #[cfg(target_arch = "x86")]
-    pub fn SetWindowLongA(h: Hwnd, index: i32, value: i32,) -> i32;
-    #[cfg(target_arch = "x86")]
-    pub fn GetWindowLongA(h: Hwnd, index: i32,) -> i32;
-    pub fn PeekMessageW(m: *mut Msg, h: Hwnd, min: u32, max: u32, remove: u32,) -> i32;
-    pub fn TranslateMessage(m: *const Msg,) -> i32;
-    pub fn DispatchMessageW(m: *const Msg,) -> isize;
-    pub fn GetSystemMetrics(index: i32,) -> i32;
-    pub fn LoadLibraryA(name: *const u8,) -> isize;
-    pub fn GetProcAddress(module: isize, name: *const u8,) -> *const std::ffi::c_void;
-}
-
-pub const PM_REMOVE: u32 = 1;
-
-pub unsafe extern "system" fn wnd_proc(h: Hwnd, m: u32, w: usize, l: isize,) -> isize {
-    DefWindowProcA(h, m, w, l,)
+#[cfg(target_arch = "x86")]
+unsafe fn style_get(hwnd: HWND,) -> WINDOW_STYLE {
+    WINDOW_STYLE(GetWindowLongW(hwnd, GWL_STYLE,) as u32,)
 }
 
 #[cfg(target_arch = "x86_64")]
-unsafe fn style_get(h: Hwnd, index: i32,) -> isize {
-    GetWindowLongPtrA(h, index,)
+unsafe fn style_set(hwnd: HWND, style: WINDOW_STYLE,) {
+    SetWindowLongPtrW(hwnd, GWL_STYLE, style.0 as isize,);
 }
 #[cfg(target_arch = "x86")]
-unsafe fn style_get(h: Hwnd, index: i32,) -> isize {
-    GetWindowLongA(h, index,) as isize
+unsafe fn style_set(hwnd: HWND, style: WINDOW_STYLE,) {
+    SetWindowLongW(hwnd, GWL_STYLE, style.0 as i32,);
 }
-#[cfg(target_arch = "x86_64")]
-unsafe fn style_set(h: Hwnd, index: i32, value: isize,) {
-    SetWindowLongPtrA(h, index, value,);
+
+/// WNDCLASSW::lpfnWndProc is a C callback, so the class needs a real
+/// extern "system" function; everything inside it is a direct windows-rs call.
+unsafe extern "system" fn default_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM,) -> LRESULT {
+    DefWindowProcW(hwnd, msg, wparam, lparam,)
 }
-#[cfg(target_arch = "x86")]
-unsafe fn style_set(h: Hwnd, index: i32, value: isize,) {
-    SetWindowLongA(h, index, value as i32,);
+
+fn message_pump() {
+    unsafe {
+        let mut msg = MSG::default();
+        while PeekMessageW(&mut msg, HWND::default(), 0, 0, PM_REMOVE,).as_bool()
+        {
+            let _ = TranslateMessage(&msg,);
+            DispatchMessageW(&msg,);
+        }
+    }
 }
 
 pub struct TestWindow {
     pub hwnd:   Hwnd,
-    class:      std::ffi::CString,
+    class:      HSTRING,
     pub width:  u32,
     pub height: u32,
 }
 
 impl TestWindow {
     pub unsafe fn create(tag: &str, width: u32, height: u32,) -> Option<Self,> {
-        let class = std::ffi::CString::new(format!("NANY_TEST_{tag}"),).ok()?;
-        let title = std::ffi::CString::new(format!("nany test - {tag}"),).ok()?;
-        let inst = GetModuleHandleW(std::ptr::null(),);
-        let wc = WndClassW {
-            style:           0,
-            lpfn_wnd_proc:   Some(wnd_proc,),
-            cb_cls_extra:    0,
-            cb_wnd_extra:    0,
-            h_instance:      inst,
-            h_icon:          0,
-            h_cursor:        0,
-            hbr_background:  0,
-            lpsz_menu_name:  std::ptr::null(),
-            lpsz_class_name: class.as_ptr() as *const u8,
+        let class = HSTRING::from(format!("NANY_TEST_{tag}"),);
+        let title = HSTRING::from(format!("nany test - {tag}"),);
+        let inst = GetModuleHandleW(PCWSTR::null(),).ok()?;
+
+        let wc = WNDCLASSW {
+            style:         WNDCLASS_STYLES(0,),
+            lpfnWndProc:   Some(default_wnd_proc,),
+            hInstance:     HINSTANCE(inst.0,),
+            lpszClassName: PCWSTR(class.as_ptr(),),
+            ..Default::default()
         };
-        RegisterClassA(&wc,);
-        let mut rc = Rect { left: 0, top: 0, right: width as i32, bottom: height as i32, };
-        AdjustWindowRect(&mut rc, WS_OVERLAPPEDWINDOW, 0,);
-        let hwnd = CreateWindowExA(
-            0,
-            class.as_ptr() as *const u8,
-            title.as_ptr() as *const u8,
+        RegisterClassW(&wc,);
+
+        let mut rc = RECT { left: 0, top: 0, right: width as i32, bottom: height as i32, };
+        AdjustWindowRect(&mut rc, WS_OVERLAPPEDWINDOW, false,).ok()?;
+        let hwnd = CreateWindowExW(
+            WINDOW_EX_STYLE(0,),
+            PCWSTR(class.as_ptr(),),
+            PCWSTR(title.as_ptr(),),
             WS_OVERLAPPEDWINDOW,
             60,
             60,
             rc.right - rc.left,
             rc.bottom - rc.top,
-            std::ptr::null_mut(),
-            0,
-            inst,
-            std::ptr::null_mut(),
-        );
-        if hwnd.is_null()
-        {
-            return None;
-        }
-        ShowWindow(hwnd, SW_SHOW,);
-        UpdateWindow(hwnd,);
-        Some(Self { hwnd, class, width, height, },)
+            HWND::default(),
+            HMENU::default(),
+            HINSTANCE(inst.0,),
+            None,
+        )
+        .ok()?;
+        let _ = ShowWindow(hwnd, SW_SHOW,);
+        let _ = UpdateWindow(hwnd,);
+        Some(Self { hwnd: hwnd.0, class, width, height, },)
     }
 
     pub unsafe fn client_size(&self,) -> (u32, u32,) {
-        let mut rc = Rect { left: 0, top: 0, right: 0, bottom: 0, };
-        if GetClientRect(self.hwnd, &mut rc,) == 0
+        let mut rc = RECT::default();
+        if GetClientRect(HWND(self.hwnd,), &mut rc,).is_err()
         {
             return (self.width.max(1,), self.height.max(1,),);
         }
@@ -185,72 +125,82 @@ impl TestWindow {
     pub unsafe fn resize(&mut self, w: u32, h: u32,) {
         self.width = w.max(1,);
         self.height = h.max(1,);
-        let mut rc = Rect { left: 0, top: 0, right: self.width as i32, bottom: self.height as i32, };
-        let style = style_get(self.hwnd, GWL_STYLE,) as u32;
-        AdjustWindowRect(&mut rc, style, 0,);
-        SetWindowPos(
-            self.hwnd,
+        let mut rc = RECT { left: 0, top: 0, right: self.width as i32, bottom: self.height as i32, };
+        let _ = AdjustWindowRect(&mut rc, style_get(HWND(self.hwnd,),), false,);
+        let _ = SetWindowPos(
+            HWND(self.hwnd,),
             HWND_TOP,
             60,
             60,
             rc.right - rc.left,
             rc.bottom - rc.top,
-            SWP_NOACTIVATE | SWP_NOZORDER,
+            SET_WINDOW_POS_FLAGS(SWP_NOACTIVATE.0 | SWP_NOZORDER.0,),
         );
-        self.pump(4,);
+        message_pump();
     }
 
-    pub unsafe fn set_style(&mut self, style: u32,) {
-        style_set(self.hwnd, GWL_STYLE, style as isize,);
-        SetWindowPos(self.hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,);
-        self.pump(2,);
+    pub unsafe fn set_style(&mut self, style: WINDOW_STYLE,) {
+        style_set(HWND(self.hwnd,), style,);
+        let _ = SetWindowPos(
+            HWND(self.hwnd,),
+            HWND_NOTOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SET_WINDOW_POS_FLAGS(SWP_NOZORDER.0 | SWP_NOACTIVATE.0 | SWP_FRAMECHANGED.0,),
+        );
+        message_pump();
     }
 
     pub unsafe fn borderless_fullscreen(&mut self,) {
-        let w = GetSystemMetrics(0,).max(640,) as u32;
-        let h = GetSystemMetrics(1,).max(480,) as u32;
-        style_set(self.hwnd, GWL_STYLE, WS_POPUP as isize,);
-        SetWindowPos(self.hwnd, HWND_TOP, 0, 0, w as i32, h as i32, SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW,);
+        let w = GetSystemMetrics(SM_CXSCREEN,).max(640,) as u32;
+        let h = GetSystemMetrics(SM_CYSCREEN,).max(480,) as u32;
+        style_set(HWND(self.hwnd,), WS_POPUP,);
+        let _ = SetWindowPos(
+            HWND(self.hwnd,),
+            HWND_TOP,
+            0,
+            0,
+            w as i32,
+            h as i32,
+            SET_WINDOW_POS_FLAGS(SWP_NOACTIVATE.0 | SWP_FRAMECHANGED.0 | SWP_SHOWWINDOW.0,),
+        );
         self.width = w;
         self.height = h;
-        self.pump(4,);
+        message_pump();
     }
 
     pub unsafe fn windowed(&mut self, w: u32, h: u32,) {
-        style_set(self.hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW as isize,);
+        style_set(HWND(self.hwnd,), WS_OVERLAPPEDWINDOW,);
         self.width = w;
         self.height = h;
-        let mut rc = Rect { left: 0, top: 0, right: w as i32, bottom: h as i32, };
-        AdjustWindowRect(&mut rc, WS_OVERLAPPEDWINDOW, 0,);
-        SetWindowPos(
-            self.hwnd,
+        let mut rc = RECT { left: 0, top: 0, right: w as i32, bottom: h as i32, };
+        let _ = AdjustWindowRect(&mut rc, WS_OVERLAPPEDWINDOW, false,);
+        let _ = SetWindowPos(
+            HWND(self.hwnd,),
             HWND_TOP,
             60,
             60,
             rc.right - rc.left,
             rc.bottom - rc.top,
-            SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW,
+            SET_WINDOW_POS_FLAGS(SWP_NOACTIVATE.0 | SWP_FRAMECHANGED.0 | SWP_SHOWWINDOW.0,),
         );
-        self.pump(4,);
+        message_pump();
     }
 
     pub unsafe fn minimize(&mut self,) {
-        ShowWindow(self.hwnd, SW_MINIMIZE,);
+        let _ = ShowWindow(HWND(self.hwnd,), SW_MINIMIZE,);
     }
 
     pub unsafe fn restore(&mut self,) {
-        ShowWindow(self.hwnd, SW_RESTORE,);
+        let _ = ShowWindow(HWND(self.hwnd,), SW_RESTORE,);
     }
 
     pub unsafe fn pump(&self, rounds: usize,) {
-        let mut msg = std::mem::zeroed::<Msg,>();
         for _ in 0..rounds
         {
-            while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE,) != 0
-            {
-                TranslateMessage(&msg,);
-                DispatchMessageW(&msg,);
-            }
+            message_pump();
         }
     }
 }
@@ -258,8 +208,11 @@ impl TestWindow {
 impl Drop for TestWindow {
     fn drop(&mut self,) {
         unsafe {
-            DestroyWindow(self.hwnd,);
-            let _ = &self.class;
+            let _ = DestroyWindow(HWND(self.hwnd,),);
+            if let Ok(inst,) = GetModuleHandleW(PCWSTR::null(),)
+            {
+                let _ = UnregisterClassW(PCWSTR(self.class.as_ptr(),), HINSTANCE(inst.0,),);
+            }
         }
     }
 }

@@ -1,3 +1,4 @@
+#![allow(unsafe_op_in_unsafe_fn)]
 //! Debug: run the D3D9 painter directly and dump the back buffer to a BMP, so
 //! the exact geometry it produced can be inspected.
 

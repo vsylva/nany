@@ -1,3 +1,4 @@
+#![allow(unsafe_op_in_unsafe_fn)]
 //! Manual D3D9 probe: a real 900x600 window presenting every frame, with the
 //! overlay menu drawn on top, so the result can be screenshotted.
 

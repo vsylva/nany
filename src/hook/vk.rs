@@ -7,8 +7,10 @@ use std::{
     },
 };
 
+use windows::core::{s, w};
+
 use super::detour;
-use crate::{log_info, log_warn, win};
+use crate::{log_info, log_warn};
 
 pub type VkHandle = u64;
 
@@ -524,7 +526,7 @@ pub unsafe fn install() -> bool {
     {
         return true;
     }
-    let module = win::module_base_bytes(b"vulkan-1.dll\0",);
+    let module = crate::api::module_base(w!("vulkan-1.dll"),);
     if module == 0
     {
         INSTALLED.store(false, Ordering::Release,);
@@ -532,25 +534,25 @@ pub unsafe fn install() -> bool {
     }
     let mut ok = false;
 
-    let p = win::proc_address(module as isize, b"vkGetInstanceProcAddr\0",) as usize;
+    let p = crate::api::proc_address(module, s!("vkGetInstanceProcAddr"),) as usize;
     ok |= hook_one("vkGetInstanceProcAddr", p, detour_gipa as *const () as usize, &ORIG_GIPA,);
-    let p = win::proc_address(module as isize, b"vkGetDeviceProcAddr\0",) as usize;
+    let p = crate::api::proc_address(module, s!("vkGetDeviceProcAddr"),) as usize;
     ok |= hook_one("vkGetDeviceProcAddr", p, detour_gdpa as *const () as usize, &ORIG_GDPA,);
 
-    let p = win::proc_address(module as isize, b"vkCreateInstance\0",) as usize;
+    let p = crate::api::proc_address(module, s!("vkCreateInstance"),) as usize;
     ok |= hook_one("vkCreateInstance", p, detour_create_instance as *const () as usize, &ORIG_CREATE_INSTANCE,);
-    let p = win::proc_address(module as isize, b"vkQueuePresentKHR\0",) as usize;
+    let p = crate::api::proc_address(module, s!("vkQueuePresentKHR"),) as usize;
     ok |= hook_one("vkQueuePresentKHR", p, detour_present as *const () as usize, &ORIG_PRESENT,);
 
-    let p = win::proc_address(module as isize, b"vkCreateSwapchainKHR\0",) as usize;
+    let p = crate::api::proc_address(module, s!("vkCreateSwapchainKHR"),) as usize;
     ok |= hook_one("vkCreateSwapchainKHR", p, detour_create_swapchain as *const () as usize, &ORIG_CREATE_SWAPCHAIN,);
-    let p = win::proc_address(module as isize, b"vkDestroySwapchainKHR\0",) as usize;
+    let p = crate::api::proc_address(module, s!("vkDestroySwapchainKHR"),) as usize;
     ok |=
         hook_one("vkDestroySwapchainKHR", p, detour_destroy_swapchain as *const () as usize, &ORIG_DESTROY_SWAPCHAIN,);
-    let p = win::proc_address(module as isize, b"vkCreateDevice\0",) as usize;
+    let p = crate::api::proc_address(module, s!("vkCreateDevice"),) as usize;
     ok |= hook_one("vkCreateDevice", p, detour_create_device as *const () as usize, &ORIG_CREATE_DEVICE,);
 
-    let p = win::proc_address(module as isize, b"vkCreateWin32SurfaceKHR\0",) as usize;
+    let p = crate::api::proc_address(module, s!("vkCreateWin32SurfaceKHR"),) as usize;
     if p != 0
     {
         let _ = hook_one(

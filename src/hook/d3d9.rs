@@ -13,7 +13,7 @@ use std::{
 };
 
 use windows::Win32::{
-    Foundation::{BOOL, HWND},
+    Foundation::{BOOL, HWND, RECT},
     Graphics::Direct3D9::{
         D3DADAPTER_DEFAULT, D3DCREATE_HARDWARE_VERTEXPROCESSING, D3DCREATE_SOFTWARE_VERTEXPROCESSING, D3DDISPLAYMODEEX,
         D3DDEVTYPE_HAL, D3DDEVTYPE_REF, D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE, D3DPRESENT_INTERVAL_IMMEDIATE,
@@ -22,7 +22,7 @@ use windows::Win32::{
     },
 };
 
-use windows::core::Interface;
+use windows::{Win32::Graphics::Gdi::RGNDATA, core::{HRESULT, Interface, w}};
 
 use super::detour;
 use crate::{log_error, log_info, log_warn, overlay, win};
@@ -48,31 +48,34 @@ const D3D_SDK_VERSION: u32 = 32;
 pub const D3DERR_DEVICELOST: i32 = 0x8876_0868u32 as i32;
 pub const D3DERR_DEVICENOTRESET: i32 = 0x8876_0869u32 as i32;
 
-type PresentFn = unsafe extern "system" fn(*mut c_void, *const c_void, *const c_void, *mut c_void, *const c_void) -> i32;
-type ResetFn = unsafe extern "system" fn(*mut c_void, *mut c_void,) -> i32;
+// The detour signatures are the vtable field types of
+// `windows::Win32::Graphics::Direct3D9::{IDirect3DDevice9_Vtbl, IDirect3DDevice9Ex_Vtbl}`,
+// spelled with the very same windows-rs types so nothing here invents its own.
+type PresentFn = unsafe extern "system" fn(*mut c_void, *const RECT, *const RECT, HWND, *const RGNDATA,) -> HRESULT;
+type ResetFn = unsafe extern "system" fn(*mut c_void, *mut D3DPRESENT_PARAMETERS,) -> HRESULT;
 type ResetExFn =
-    unsafe extern "system" fn(*mut c_void, *mut D3DPRESENT_PARAMETERS, *mut D3DDISPLAYMODEEX,) -> i32;
+    unsafe extern "system" fn(*mut c_void, *mut D3DPRESENT_PARAMETERS, *mut D3DDISPLAYMODEEX,) -> HRESULT;
 
 pub unsafe fn installed() -> bool {
     INSTALLED.load(Ordering::Acquire,)
 }
 
-pub unsafe fn is_device_lost(hr: i32,) -> bool {
-    hr == D3DERR_DEVICELOST || hr == D3DERR_DEVICENOTRESET
+pub unsafe fn is_device_lost(hr: HRESULT,) -> bool {
+    hr.0 == D3DERR_DEVICELOST || hr.0 == D3DERR_DEVICENOTRESET
 }
 
 unsafe extern "system" fn detour_present(
     device: *mut c_void,
-    source: *const c_void,
-    dest: *const c_void,
-    override_window: *mut c_void,
-    dirty: *const c_void,
-) -> i32 {
+    source: *const RECT,
+    dest: *const RECT,
+    override_window: HWND,
+    dirty: *const RGNDATA,
+) -> HRESULT {
     overlay::on_present_d3d9(device,);
     let orig = ORIG_PRESENT.load(Ordering::Acquire,);
     if orig == 0
     {
-        return 0;
+        return HRESULT(0,);
     }
     let f: PresentFn = std::mem::transmute(orig,);
     let hr = f(device, source, dest, override_window, dirty,);
@@ -83,20 +86,20 @@ unsafe extern "system" fn detour_present(
     hr
 }
 
-unsafe extern "system" fn detour_reset(device: *mut c_void, params: *mut c_void,) -> i32 {
+unsafe extern "system" fn detour_reset(device: *mut c_void, params: *mut D3DPRESENT_PARAMETERS,) -> HRESULT {
     // default-pool resources (our vertex/index buffers) and any pipeline binding
     // of ours must go before Reset, otherwise the game's own Reset fails
     overlay::on_reset_d3d9(device,);
     let orig = ORIG_RESET.load(Ordering::Acquire,);
     if orig == 0
     {
-        return 0;
+        return HRESULT(0,);
     }
     let f: ResetFn = std::mem::transmute(orig,);
     let hr = f(device, params,);
     // only a successful Reset gives us a usable device: rebuild right away so
     // the very next frame already has its atlas back
-    overlay::on_reset_done_d3d9(device, hr,);
+    overlay::on_reset_done_d3d9(device, hr.0,);
     hr
 }
 
@@ -104,16 +107,16 @@ unsafe extern "system" fn detour_reset_ex(
     device: *mut c_void,
     params: *mut D3DPRESENT_PARAMETERS,
     mode: *mut D3DDISPLAYMODEEX,
-) -> i32 {
+) -> HRESULT {
     overlay::on_reset_d3d9(device,);
     let orig = ORIG_RESET_EX.load(Ordering::Acquire,);
     if orig == 0
     {
-        return 0;
+        return HRESULT(0,);
     }
     let f: ResetExFn = std::mem::transmute(orig,);
     let hr = f(device, params, mode,);
-    overlay::on_reset_done_d3d9(device, hr,);
+    overlay::on_reset_done_d3d9(device, hr.0,);
     hr
 }
 
@@ -135,8 +138,8 @@ unsafe fn hook_one(name: &str, target: usize, detour_fn: usize, slot: &AtomicUsi
 }
 
 unsafe fn probe_device() -> Option<IDirect3DDevice9,> {
-    let class = c"nany_probe_d3d9";
-    let title = c"nany probe 9";
+    let class = w!("nany_probe_d3d9");
+    let title = w!("nany probe 9");
     let hwnd = win::create_dummy_window(class, title,);
     if hwnd.is_null()
     {
@@ -192,8 +195,8 @@ unsafe fn probe_device() -> Option<IDirect3DDevice9,> {
 /// fullscreen. A plain device cannot be cast to `IDirect3DDevice9Ex`, so the
 /// slot also proves that the runtime really is Ex capable.
 unsafe fn probe_device_ex() -> Option<IDirect3DDevice9Ex,> {
-    let class = c"nany_probe_d3d9ex";
-    let title = c"nany probe 9ex";
+    let class = w!("nany_probe_d3d9ex");
+    let title = w!("nany probe 9ex");
     let hwnd = win::create_dummy_window(class, title,);
     if hwnd.is_null()
     {
@@ -256,7 +259,7 @@ pub unsafe fn install() -> bool {
     {
         return true;
     }
-    if crate::api::module_base("d3d9.dll",) == 0
+    if crate::api::module_base(w!("d3d9.dll"),) == 0
     {
         INSTALLED.store(false, Ordering::Release,);
         return false;

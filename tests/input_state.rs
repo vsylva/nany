@@ -1,17 +1,19 @@
+#![allow(unsafe_op_in_unsafe_fn)]
 use egui::Event;
 use nany::input;
 
 mod support;
 
-unsafe extern "system" {
-    fn SendMessageW(hwnd: usize, msg: u32, wparam: usize, lparam: isize,) -> isize;
-}
+use windows::Win32::{
+    Foundation::{HWND, LPARAM, WPARAM},
+    UI::{
+        Input::KeyboardAndMouse::{VK_CONTROL, VK_MENU},
+        WindowsAndMessaging::{SendMessageW, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS},
+    },
+};
 
-const WM_KEYDOWN: u32 = 0x0100;
-const WM_KEYUP: u32 = 0x0101;
-const WM_KILLFOCUS: u32 = 0x0008;
-const VK_CONTROL: i32 = 0x11;
-const VK_MENU: i32 = 0x12;
+const VK_CONTROL_VK: i32 = VK_CONTROL.0 as i32;
+const VK_MENU_VK: i32 = VK_MENU.0 as i32;
 
 unsafe fn fake_hwnd() -> nany::win::Hwnd {
     1usize as nany::win::Hwnd
@@ -50,16 +52,16 @@ fn wndproc_records_generic_control_and_alt_for_modifiers() {
         let win = support::TestWindow::create("mods", 200, 200,).expect("test window",);
         nany::hook::wndproc::install(win.hwnd,);
 
-        SendMessageW(win.hwnd as usize, WM_KEYDOWN, VK_CONTROL as usize, 0,);
-        assert!(input::held(VK_CONTROL,), "generic VK_CONTROL was never recorded from WM_KEYDOWN");
+        SendMessageW(HWND(win.hwnd), WM_KEYDOWN, WPARAM(VK_CONTROL_VK as usize), LPARAM(0),);
+        assert!(input::held(VK_CONTROL_VK,), "generic VK_CONTROL was never recorded from WM_KEYDOWN");
         assert!(input::modifiers().ctrl, "ctrl modifier is not visible to egui");
-        SendMessageW(win.hwnd as usize, WM_KEYUP, VK_CONTROL as usize, 0,);
+        SendMessageW(HWND(win.hwnd), WM_KEYUP, WPARAM(VK_CONTROL_VK as usize), LPARAM(0),);
         assert!(!input::modifiers().ctrl, "ctrl modifier stuck after WM_KEYUP");
 
-        SendMessageW(win.hwnd as usize, WM_KEYDOWN, VK_MENU as usize, 0,);
-        assert!(input::held(VK_MENU,), "generic VK_MENU was never recorded from WM_KEYDOWN");
+        SendMessageW(HWND(win.hwnd), WM_KEYDOWN, WPARAM(VK_MENU_VK as usize), LPARAM(0),);
+        assert!(input::held(VK_MENU_VK,), "generic VK_MENU was never recorded from WM_KEYDOWN");
         assert!(input::modifiers().alt, "alt modifier is not visible to egui");
-        SendMessageW(win.hwnd as usize, WM_KEYUP, VK_MENU as usize, 0,);
+        SendMessageW(HWND(win.hwnd), WM_KEYUP, WPARAM(VK_MENU_VK as usize), LPARAM(0),);
         assert!(!input::modifiers().alt, "alt modifier stuck after WM_KEYUP");
 
         nany::hook::wndproc::uninstall();
@@ -73,11 +75,11 @@ fn kill_focus_releases_held_keys_and_buttons() {
         let win = support::TestWindow::create("focus", 200, 200,).expect("test window",);
         nany::hook::wndproc::install(win.hwnd,);
 
-        SendMessageW(win.hwnd as usize, WM_KEYDOWN, 0x57, 0,);
+        SendMessageW(HWND(win.hwnd), WM_KEYDOWN, WPARAM(0x57), LPARAM(0),);
         assert!(input::held(0x57,),);
         input::on_mouse_button(0, true,);
 
-        SendMessageW(win.hwnd as usize, WM_KILLFOCUS, 0, 0,);
+        SendMessageW(HWND(win.hwnd), WM_KILLFOCUS, WPARAM(0), LPARAM(0),);
         assert!(!input::held(0x57,), "key stuck after WM_KILLFOCUS");
         assert!(!input::button_down(0,), "button stuck after WM_KILLFOCUS");
 

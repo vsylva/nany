@@ -1,3 +1,4 @@
+#![allow(unsafe_op_in_unsafe_fn)]
 #![allow(non_snake_case)]
 
 //! D3D9 backend test: the real overlay menu must land in the back buffer.

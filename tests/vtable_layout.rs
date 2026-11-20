@@ -1,3 +1,4 @@
+#![allow(unsafe_op_in_unsafe_fn)]
 #![allow(non_snake_case)]
 
 //! Runtime verification of the raw vtable slots this crate hooks.

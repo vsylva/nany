@@ -2,12 +2,15 @@ use std::{collections::HashMap, ffi::c_void};
 
 use crate::{log_error, log_info};
 
+// D3D12SerializeRootSignature is resolved lazily on purpose (a static import
+// would make d3d12.dll a load-time dependency of the whole DLL), but its
+// signature is the windows-rs one: ID3DBlob** out-params and HRESULT back.
 type SerializeRootSignatureFn = unsafe extern "system" fn(
     *const D3D12_ROOT_SIGNATURE_DESC,
     D3D_ROOT_SIGNATURE_VERSION,
-    *mut c_void,
-    *mut c_void,
-) -> i32;
+    *mut Option<windows::Win32::Graphics::Direct3D::ID3DBlob,>,
+    *mut Option<windows::Win32::Graphics::Direct3D::ID3DBlob,>,
+) -> windows::core::HRESULT;
 use std::mem::ManuallyDrop;
 
 use windows::{
@@ -25,7 +28,7 @@ use windows::{
             },
         },
     },
-    core::{Interface, Result},
+    core::{Interface, Result, s, w},
 };
 
 use super::{
@@ -246,7 +249,7 @@ impl Painter12 {
         let mut blob: Option<windows::Win32::Graphics::Direct3D::ID3DBlob,> = None;
         let mut err: Option<windows::Win32::Graphics::Direct3D::ID3DBlob,> = None;
 
-        let raw = crate::api::resolve("d3d12.dll", b"D3D12SerializeRootSignature",);
+        let raw = crate::api::resolve(w!("d3d12.dll"), s!("D3D12SerializeRootSignature"),);
         if raw == 0
         {
             return Err(windows::core::Error::new(
@@ -255,19 +258,11 @@ impl Painter12 {
             ),);
         }
         let serialize: SerializeRootSignatureFn = std::mem::transmute(raw,);
-        let hr = serialize(
-            &rs_desc,
-            D3D_ROOT_SIGNATURE_VERSION_1,
-            &mut blob as *mut _ as *mut c_void,
-            &mut err as *mut _ as *mut c_void,
-        );
-        if hr < 0
+        let hr = serialize(&rs_desc, D3D_ROOT_SIGNATURE_VERSION_1, &mut blob, &mut err,);
+        if hr.is_err()
         {
             let detail = err.map(|b| String::from_utf8_lossy(&blob_bytes(&b,),).into_owned(),).unwrap_or_default();
-            return Err(windows::core::Error::new(
-                windows::core::HRESULT(hr,),
-                format!("SerializeRootSignature: {detail}"),
-            ),);
+            return Err(windows::core::Error::new(hr, format!("SerializeRootSignature: {detail}"),),);
         }
         let Some(blob,) = blob
         else
@@ -390,10 +385,7 @@ impl Painter12 {
         root: &ID3D12RootSignature,
         format: DXGI_FORMAT,
     ) -> Result<ID3D12PipelineState,> {
-        let vs = shader::compile(super::HLSL, "vs_main", "vs_5_0",)
-            .map_err(|e| windows::core::Error::new(windows::core::HRESULT(0x8000_4005u32 as i32,), e,),)?;
-        let ps = shader::compile(super::HLSL, "ps_main", "ps_5_0",)
-            .map_err(|e| windows::core::Error::new(windows::core::HRESULT(0x8000_4005u32 as i32,), e,),)?;
+        let (vs, ps,) = (shader::SM5_VS, shader::SM5_PS);
 
         let elems = [
             D3D12_INPUT_ELEMENT_DESC {

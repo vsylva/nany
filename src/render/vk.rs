@@ -1,5 +1,7 @@
 use std::{collections::HashMap, ffi::c_void};
 
+use windows::core::{s, w};
+
 use super::mesh::{self, Batch, VERTEX_SIZE};
 use crate::{
     hook::vk::{DeviceInfo, SwapchainInfo, VkHandle, device_info, swapchain_info},
@@ -630,12 +632,12 @@ impl PainterVK {
     pub unsafe fn new(sc: VkHandle,) -> Option<Self,> {
         let dev: DeviceInfo = device_info()?;
         let info: SwapchainInfo = swapchain_info(sc,)?;
-        let module = crate::win::module_base_bytes(b"vulkan-1.dll\0",);
+        let module = crate::api::module_base(w!("vulkan-1.dll"),);
         if module == 0
         {
             return None;
         }
-        let raw = crate::win::proc_address(module as isize, b"vkGetDeviceProcAddr\0",);
+        let raw = crate::api::proc_address(module, s!("vkGetDeviceProcAddr"),);
         if raw.is_null()
         {
             return None;
@@ -643,7 +645,7 @@ impl PainterVK {
         let gdpa: PfnGdpa = std::mem::transmute(raw,);
 
         let inst = crate::hook::vk::instance()?;
-        let gipa_raw = crate::win::proc_address(module as isize, b"vkGetInstanceProcAddr\0",);
+        let gipa_raw = crate::api::proc_address(module, s!("vkGetInstanceProcAddr"),);
         if gipa_raw.is_null()
         {
             return None;

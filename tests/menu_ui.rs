@@ -1,3 +1,4 @@
+#![allow(unsafe_op_in_unsafe_fn)]
 #![allow(deprecated)]
 
 use egui::{Align2, Color32, Context, FontId, Pos2, RawInput, Rect, Stroke, Vec2};

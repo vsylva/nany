@@ -30,40 +30,6 @@ use super::{
 };
 use crate::log_info;
 
-/// Shader model 3.0 covers anything from 2004 on; 2.0 is the fallback for the
-/// rare old driver.
-///
-/// D3D9 samples the render target at *integer* coordinates (the centre of pixel
-/// (0,0) is at 0,0), while D3D10+ and every other backend here use half-integer
-/// centres. Without the half-pixel shift the whole mesh lands half a pixel off
-/// and every glyph edge is blended across two pixels by the linear atlas
-/// sampler, which is what makes d3d9 text look soft. `- 0.5` puts the mesh back
-/// on texel centres.
-const HLSL: &str = r#"
-float4 uParams : register(c0);
-
-struct VSIn  { float2 pos : POSITION; float2 uv : TEXCOORD0; float4 col : COLOR0; };
-struct PSIn  { float4 pos : POSITION; float2 uv : TEXCOORD0; float4 col : COLOR0; };
-
-PSIn vs_main(VSIn i) {
-    PSIn o;
-    float2 p = (i.pos - 0.5) / uParams.xy * 2.0 - 1.0;
-    o.pos = float4(p.x, -p.y, 0.0, 1.0);
-    o.uv = i.uv;
-    o.col = i.col;
-    return o;
-}
-
-sampler2D smp : register(s0);
-
-/* D3D9 back buffers are plain 8-bit colour targets, so there is no sRGB decode
-   to do here: egui already produced display-space colours. */
-float4 ps_main(PSIn i) : COLOR {
-    float a = tex2D(smp, i.uv).r;
-    return i.col * a;
-}
-"#;
-
 /// `D3DDECLTYPE_UNUSED`, i.e. the end marker of a vertex declaration.
 const DECL_UNUSED: u8 = 17;
 
@@ -118,20 +84,6 @@ unsafe fn set_state(
     let _ = device.SetRenderState(state, value as u32,);
 }
 
-unsafe fn compile_pair() -> Option<(Vec<u8,>, Vec<u8,>)> {
-    for (vs, ps,) in [("vs_3_0", "ps_3_0",), ("vs_2_0", "ps_2_0",)]
-    {
-        let (Ok(vs_code,), Ok(ps_code,),) =
-            (shader::compile(HLSL, "vs_main", vs,), shader::compile(HLSL, "ps_main", ps,),)
-        else
-        {
-            continue;
-        };
-        return Some((vs_code, ps_code,));
-    }
-    None
-}
-
 unsafe fn make_texture(device: &IDirect3DDevice9, w: usize, h: usize, data: &[u8],) -> Option<IDirect3DTexture9,> {
     if w == 0 || h == 0 || data.len() < w * h
     {
@@ -164,7 +116,7 @@ impl Painter9 {
     /// Everything the device owns: shaders, the input declaration and the white
     /// texel. Called once on creation and again after every device reset.
     unsafe fn create_objects(device: &IDirect3DDevice9,) -> Option<Objects,> {
-        let (vs_code, ps_code,) = compile_pair()?;
+        let (vs_code, ps_code,) = shader::d3d9_pair()?;
         let vs = device.CreateVertexShader(vs_code.as_ptr() as *const u32,).ok()?;
         let ps = device.CreatePixelShader(ps_code.as_ptr() as *const u32,).ok()?;
 

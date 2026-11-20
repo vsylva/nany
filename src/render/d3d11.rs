@@ -22,36 +22,6 @@ use super::{
 };
 use crate::log_info;
 
-const HLSL: &str = r#"
-cbuffer Params : register(b0) { float2 uScreen; float uSrgb; float uPad; };
-struct VSIn  { float2 pos : POSITION; float2 uv : TEXCOORD0; float4 col : COLOR0; };
-struct PSIn  { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; float4 col : COLOR0; };
-PSIn vs_main(VSIn i) {
-    PSIn o;
-    float2 p = i.pos / uScreen * 2.0 - 1.0;
-    o.pos = float4(p.x, -p.y, 0.0, 1.0);
-    o.uv = i.uv;
-    o.col = i.col;
-    return o;
-}
-Texture2D    tex : register(t0);
-SamplerState smp : register(s0);
-
-float3 srgb_to_linear(float3 c) {
-    float3 lo = c / 12.92;
-    float3 hi = pow((c + 0.055) / 1.055, 2.4);
-    float3 k = step(c, 0.04045);
-    return lerp(hi, lo, k);
-}
-
-float4 ps_main(PSIn i) : SV_Target {
-    float a = tex.Sample(smp, i.uv).r;
-    float4 c = i.col * a;
-    if (uSrgb > 0.5) { c.rgb = srgb_to_linear(c.rgb); }
-    return c;
-}
-"#;
-
 struct TexEntry {
     w:    usize,
     h:    usize,
@@ -266,9 +236,7 @@ unsafe impl Send for Painter11 {}
 
 impl Painter11 {
     pub unsafe fn new(device: &ID3D11Device, ctx: &ID3D11DeviceContext,) -> Result<Self,> {
-        let fail = |e: String| windows::core::Error::new(windows::core::HRESULT(0x8000_4005u32 as i32,), e,);
-        let vs_code = shader::compile(HLSL, "vs_main", "vs_5_0",).map_err(fail,)?;
-        let ps_code = shader::compile(HLSL, "ps_main", "ps_5_0",).map_err(fail,)?;
+        let (vs_code, ps_code,) = (shader::SM5_VS, shader::SM5_PS);
 
         let mut vs: Option<ID3D11VertexShader,> = None;
         device.CreateVertexShader(&vs_code, None::<&ID3D11ClassLinkage,>, Some(&mut vs as *mut _,),)?;

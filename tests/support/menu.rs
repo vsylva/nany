@@ -1,3 +1,4 @@
+#![allow(unsafe_op_in_unsafe_fn)]
 use egui::{Color32, CornerRadius, FontId, Margin, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, Vec2};
 
 pub struct Theme;

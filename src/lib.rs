@@ -1,4 +1,16 @@
+#![feature(arbitrary_self_types_pointers)]
 #![allow(unsafe_op_in_unsafe_fn)]
+#![allow(static_mut_refs)]
+#![allow(nonstandard_style)]
+#![allow(dangerous_implicit_autorefs)]
+#![allow(integer_to_ptr_transmutes)]
+#![allow(internal_features)]
+#![allow(ptr_to_integer_transmute_in_consts)]
+#![allow(unused_doc_comments)]
+#![allow(unused_imports)]
+#![allow(function_casts_as_integer)]
+#![allow(mutable_transmutes)]
+
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
 compile_error!("nany supports Windows on x86_64 and x86");
@@ -63,12 +75,12 @@ pub unsafe fn on_dll_attach_tagged(tag: &str, provider: Box<dyn Provider,>,) {
         log::init(&tag,);
         log_info!("init", format!("worker start (tag={tag})"));
 
-        if api::try_api().is_none()
+        if !api::ready()
         {
-            log_error!("init", "Win32 export table bootstrap failed, aborting hook install");
+            log_error!("init", "Win32 loader path is not usable, aborting hook install");
             return;
         }
-        log_info!("init", "api table ready");
+        log_info!("init", "api loader ready");
         let _ = hook::dxgi::install();
         {
             let d3d9 = hook::d3d9::install();
