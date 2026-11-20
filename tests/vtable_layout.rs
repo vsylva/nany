@@ -257,3 +257,63 @@ fn dxgi_vtable_slots_are_what_we_hook() {
         let _ = sc3.Present(0, DXGI_PRESENT(0,),);
     }
 }
+
+/// D3D9 has no swapchain object, so `hook/d3d9.rs` derives its slots from the
+/// generated vtable layout; this pins those numbers to the ones d3d9.h uses.
+#[test]
+fn d3d9_vtable_slots_are_what_we_hook() {
+    use windows::Win32::Graphics::Direct3D9::{
+        D3DCREATE_SOFTWARE_VERTEXPROCESSING, D3DDEVTYPE_HAL, D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE,
+        D3DPRESENT_INTERVAL_IMMEDIATE, D3DPRESENT_PARAMETERS, D3DSWAPEFFECT_DISCARD, Direct3DCreate9, IDirect3DDevice9,
+        IDirect3DDevice9_Vtbl,
+    };
+
+    unsafe {
+        let win = support::TestWindow::create("vtbl9", 64, 64,).expect("test window",);
+        let Some(d3d,) = Direct3DCreate9(32,)
+        else
+        {
+            eprintln!("Direct3DCreate9 failed, skipping");
+            return;
+        };
+        let mut params = D3DPRESENT_PARAMETERS {
+            BackBufferWidth:      64,
+            BackBufferHeight:     64,
+            BackBufferFormat:     D3DFMT_A8R8G8B8,
+            BackBufferCount:      1,
+            MultiSampleType:      D3DMULTISAMPLE_NONE,
+            SwapEffect:           D3DSWAPEFFECT_DISCARD,
+            hDeviceWindow:        HWND(win.hwnd,),
+            Windowed:             BOOL(1,),
+            PresentationInterval: D3DPRESENT_INTERVAL_IMMEDIATE as u32,
+            ..Default::default()
+        };
+
+        let mut device: Option<IDirect3DDevice9,> = None;
+        if d3d
+            .CreateDevice(
+                0,
+                D3DDEVTYPE_HAL,
+                HWND(win.hwnd,),
+                D3DCREATE_SOFTWARE_VERTEXPROCESSING as u32,
+                &mut params as *mut _,
+                &mut device,
+            )
+            .is_err()
+        {
+            eprintln!("d3d9 device creation failed, skipping");
+            return;
+        }
+        let device = device.expect("device",);
+
+        let vtable = *(device.as_raw() as *const usize);
+        let present = fn_at(vtable, std::mem::offset_of!(IDirect3DDevice9_Vtbl, Present),);
+        let reset = fn_at(vtable, std::mem::offset_of!(IDirect3DDevice9_Vtbl, Reset),);
+        let end_scene = fn_at(vtable, std::mem::offset_of!(IDirect3DDevice9_Vtbl, EndScene),);
+        println!("d3d9 Present 0x{present:X} Reset 0x{reset:X} EndScene 0x{end_scene:X}");
+
+        assert_eq!(find_slot(device.as_raw(), present, 128,), 17, "Present slot");
+        assert_eq!(find_slot(device.as_raw(), reset, 128,), 16, "Reset slot");
+        assert_eq!(find_slot(device.as_raw(), end_scene, 128,), 42, "EndScene slot");
+    }
+}

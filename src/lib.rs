@@ -1,7 +1,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
-#[cfg(not(target_pointer_width = "64"))]
-compile_error!("nany only supports x86_64 Windows (PEB offsets and inline hooks assume 64-bit)");
+#[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
+compile_error!("nany supports Windows on x86_64 and x86");
 
 pub mod api;
 pub mod debug_panel;
@@ -23,9 +23,10 @@ pub unsafe fn init(tag: &str, provider: Box<dyn Provider,>,) -> bool {
     log_info!("init", format!("pid={} module={}", std::process::id(), win::module_path()));
     overlay::set_provider(provider,);
     let ok = hook::dxgi::install();
+    let d3d9_ok = hook::d3d9::install();
     let gl_ok = hook::gl::install();
     let vk_ok = hook::vk::install();
-    log_info!("init", format!("hooks installed = dxgi:{ok} gl:{gl_ok} vk:{vk_ok}"));
+    log_info!("init", format!("hooks installed = dxgi:{ok} d3d9:{d3d9_ok} gl:{gl_ok} vk:{vk_ok}"));
     overlay::ensure_wndproc();
     ok
 }
@@ -35,6 +36,7 @@ pub unsafe fn install_hooks_only() -> bool {
     {
         log::init("nany",);
     }
+    hook::d3d9::ensure();
     hook::gl::ensure();
     hook::vk::ensure();
     hook::dxgi::ensure()
@@ -69,6 +71,10 @@ pub unsafe fn on_dll_attach_tagged(tag: &str, provider: Box<dyn Provider,>,) {
         log_info!("init", "api table ready");
         let _ = hook::dxgi::install();
         {
+            let d3d9 = hook::d3d9::install();
+            log_info!("init", format!("d3d9 hooks installed = {d3d9}"));
+        }
+        {
             let gl = hook::gl::install();
             log_info!("init", format!("gl hooks installed = {gl}"));
         }
@@ -92,6 +98,10 @@ pub unsafe fn ensure_late_hooks() {
     if !hook::dxgi::installed()
     {
         let _ = hook::dxgi::install();
+    }
+    if !hook::d3d9::installed()
+    {
+        let _ = hook::d3d9::install();
     }
     if !hook::gl::installed()
     {

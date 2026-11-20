@@ -10,6 +10,7 @@ use std::{
 
 use windows::{
     Win32::Graphics::{
+        Direct3D9::{D3DBACKBUFFER_TYPE_MONO, D3DDEVICE_CREATION_PARAMETERS, D3DSURFACE_DESC, IDirect3DDevice9},
         Direct3D11::ID3D11Device, Direct3D11on12::ID3D11On12Device, Direct3D12::ID3D12CommandQueue,
         Dxgi::IDXGISwapChain,
     },
@@ -53,6 +54,7 @@ impl Provider for () {
 
 #[allow(clippy::large_enum_variant)]
 enum Renderer {
+    Dx9(render::d3d9::Painter9,),
     Dx11(render::d3d11::Painter11,),
     Dx12(render::d3d12::Painter12,),
     Gl(render::gl::PainterGL,),
@@ -122,7 +124,7 @@ static PROVIDER: OnceLock<Box<dyn Provider,>,> = OnceLock::new();
 static ENTRY_TICK: AtomicU64 = AtomicU64::new(1,);
 
 struct Entry {
-    key:       usize,
+    key:       u64,
     ov:        Overlay,
     last_used: u64,
 }
@@ -153,7 +155,7 @@ unsafe fn lock_entries() -> std::sync::MutexGuard<'static, Vec<Entry,>,> {
     }
 }
 
-unsafe fn with_entry<R,>(key: usize, f: impl FnOnce(&mut Overlay,) -> R,) -> R {
+unsafe fn with_entry<R,>(key: u64, f: impl FnOnce(&mut Overlay,) -> R,) -> R {
     let tick = ENTRY_TICK.fetch_add(1, Ordering::Relaxed,);
     let mut g = lock_entries();
     let idx = match g.iter().position(|e| e.key == key,)
@@ -177,7 +179,7 @@ unsafe fn with_entry<R,>(key: usize, f: impl FnOnce(&mut Overlay,) -> R,) -> R {
     f(&mut g[idx].ov,)
 }
 
-unsafe fn with_existing<R,>(key: usize, f: impl FnOnce(&mut Overlay,) -> R,) -> Option<R,> {
+unsafe fn with_existing<R,>(key: u64, f: impl FnOnce(&mut Overlay,) -> R,) -> Option<R,> {
     let tick = ENTRY_TICK.fetch_add(1, Ordering::Relaxed,);
     let mut g = lock_entries();
     let idx = g.iter().position(|e| e.key == key,)?;
@@ -589,6 +591,7 @@ impl Overlay {
 
         let tex = match &self.renderer
         {
+            Renderer::Dx9(p,) => p.tex_count(),
             Renderer::Dx11(p,) => p.tex_count(),
             Renderer::Dx12(p,) => p.tex_count(),
             Renderer::Gl(p,) => p.tex_count(),
@@ -599,6 +602,91 @@ impl Overlay {
             "frame",
             format!("{} {}x{} capture={} tex={} ms={:.2}", backend.label(), w, h, captured as u8, tex, self.last_ms)
         );
+    }
+
+    unsafe fn frame_d3d9(&mut self, device_raw: *mut c_void,) {
+        let device: ManuallyDrop<IDirect3DDevice9,> = ManuallyDrop::new(IDirect3DDevice9::from_raw(device_raw,),);
+        let (t0, dt,) = self.tick();
+
+        if self.hwnd == 0
+        {
+            let mut params = D3DDEVICE_CREATION_PARAMETERS::default();
+            if device.GetCreationParameters(&mut params,).is_ok()
+            {
+                let focus = params.hFocusWindow;
+                if !focus.0.is_null()
+                {
+                    self.hwnd = focus.0 as usize;
+                    log_info!("win", format!("d3d9 window {:#x}", self.hwnd));
+                    crate::hook::wndproc::install(focus.0,);
+                }
+            }
+        }
+        if self.hwnd == 0
+        {
+            let h = win::find_main_window();
+            if !h.is_null()
+            {
+                self.hwnd = h as usize;
+                log_info!("win", format!("fallback window '{}'", win::window_title(h)));
+                crate::hook::wndproc::install(h,);
+            }
+        }
+
+        let (w, h,) = match device.GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO,)
+        {
+            Ok(backbuffer,) =>
+            {
+                let mut desc = D3DSURFACE_DESC::default();
+                if backbuffer.GetDesc(&mut desc,).is_ok() { (desc.Width.max(1,), desc.Height.max(1,),) } else { (0, 0,) }
+            }
+            Err(_,) => (0, 0,),
+        };
+        if w < 8 || h < 8
+        {
+            return;
+        }
+
+        let (mut tex_deltas, captured,) = self.ui_pass(w, h, Backend::D3D9.label(), dt,);
+
+        if !matches!(self.renderer, Renderer::Dx9(_)) && !self.renderer_failed
+        {
+            self.before_rebuild();
+            match render::d3d9::Painter9::new(&device,)
+            {
+                Ok(p,) =>
+                {
+                    self.renderer = Renderer::Dx9(p,);
+                    self.ever_rendered = true;
+                    log_info!("d3d9", "painter created");
+                }
+                Err(e,) =>
+                {
+                    log_error!("d3d9", format!("painter failed: {e}"));
+                    self.renderer_failed = true;
+                }
+            }
+        }
+
+        let prims: &[egui::ClippedPrimitive] = match &self.last_prims
+        {
+            Some(p,) => p,
+            None => &[],
+        };
+        let mut consumed = false;
+        if let Renderer::Dx9(p,) = &mut self.renderer
+        {
+            p.ensure_target(w, h,);
+            apply_all(&mut tex_deltas, |d| p.apply_textures(d,),);
+            p.paint(prims, (w, h,),);
+            consumed = true;
+        }
+        if !consumed
+        {
+            self.stash_pending(tex_deltas,);
+        }
+
+        self.finish_frame(t0, Backend::D3D9, w, h, captured,);
     }
 
     unsafe fn frame_gl(&mut self, hwnd: usize, w: u32, h: u32,) {
@@ -734,8 +822,8 @@ impl Overlay {
 pub unsafe fn on_vk_present(queue: u64, swapchain: u64, image_index: u32,) -> Option<u64,> {
     let key = match crate::hook::vk::swapchain_hwnd(swapchain,)
     {
-        Some(h,) if h != 0 => h | (2usize << 47),
-        _ => (swapchain as usize) | (2usize << 47),
+        Some(h,) if h != 0 => h as u64 | (2u64 << 62),
+        _ => swapchain | (2u64 << 62),
     };
     if log::enabled() && self::ENTRY_TICK.load(Ordering::Relaxed,) % 60 == 0
     {
@@ -768,10 +856,56 @@ pub unsafe fn on_gl_present(hdc: *mut c_void,) {
         return;
     }
 
-    let key = (hdc as usize) | (1usize << 47);
+    let key = (hdc as usize as u64) | (1u64 << 62);
     with_entry(key, |st| {
         st.frame_gl(hwnd as usize, w as u32, h as u32,);
         st.note_ok();
+    },);
+}
+
+/// Tag bit 3 marks a D3D9 device key (DXGI swapchains use bit 0 alone).
+const D3D9_KEY: u64 = 3u64 << 62;
+
+pub unsafe fn on_present_d3d9(device: *mut c_void,) {
+    if device.is_null()
+    {
+        return;
+    }
+    let key = (device as usize as u64) | D3D9_KEY;
+    with_entry(key, |st| {
+        st.frame_d3d9(device,);
+        st.note_ok();
+    },);
+}
+
+/// Called from the `Reset` hook: default-pool buffers have to go first.
+pub unsafe fn on_reset_d3d9(device: *mut c_void,) {
+    let key = (device as usize as u64) | D3D9_KEY;
+    with_existing(key, |st| {
+        if let Renderer::Dx9(p,) = &mut st.renderer
+        {
+            p.release_target();
+            log_info!("resize", "dx9 buffers released before Reset");
+        }
+        st.renderer = Renderer::None;
+        st.pending_tex.clear();
+        st.last_prims = None;
+    },);
+}
+
+pub unsafe fn on_lost_d3d9(device: *mut c_void,) {
+    let key = (device as usize as u64) | D3D9_KEY;
+    with_existing(key, |st| {
+        if matches!(st.renderer, Renderer::None)
+        {
+            return;
+        }
+        log_info!("device", "d3d9 device lost, dropping painter");
+        st.renderer = Renderer::None;
+        st.renderer_failed = false;
+        st.pending_tex.clear();
+        st.last_prims = None;
+        st.ctx = Overlay::make_ctx();
     },);
 }
 
@@ -780,7 +914,7 @@ pub unsafe fn on_present(sc_raw: *mut c_void,) {
     {
         return;
     }
-    let key = sc_raw as usize;
+    let key = sc_raw as usize as u64;
     with_entry(key, |st| {
         st.frame(sc_raw,);
         st.note_ok();
@@ -788,7 +922,7 @@ pub unsafe fn on_present(sc_raw: *mut c_void,) {
 }
 
 pub unsafe fn on_resize(sc_raw: *mut c_void,) {
-    with_existing(sc_raw as usize, |st| match &mut st.renderer
+    with_existing(sc_raw as usize as u64, |st| match &mut st.renderer
     {
         Renderer::Dx11(p,) =>
         {
@@ -806,7 +940,7 @@ pub unsafe fn on_resize(sc_raw: *mut c_void,) {
 }
 
 pub unsafe fn on_device_lost(sc_raw: *mut c_void,) {
-    with_existing(sc_raw as usize, |st| {
+    with_existing(sc_raw as usize as u64, |st| {
         if matches!(st.renderer, Renderer::None)
         {
             return;

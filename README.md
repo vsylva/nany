@@ -1,6 +1,6 @@
 <h3>&nbsp; <a href="README.md">English</a> | <a href="README.zh-CN.md">中文</a> &nbsp;</h3>
 
-## Overlay framework for **Direct3D 11 / 12 / D3D11on12 / OpenGL / Vulkan**, backend detected automatically per swapchain.
+## Overlay framework for **Direct3D 9 / 11 / 12 / D3D11on12 / OpenGL / Vulkan** on **x86 and x86-64**, backend detected automatically per swapchain.
 
 <img src="assets/screenshots/Dying Light.png" width="360" alt="Dying Light"> <img src="assets/screenshots/Resident Evil 4.png" width="360" alt="Resident Evil 4">
 
@@ -110,8 +110,12 @@ pub unsafe extern "system" fn DllMain(_h: *mut std::ffi::c_void, reason: u32, _r
 # debug builds write `<dll>.log` next to the DLL; release builds write no log
 cargo build --release
 
+# 32-bit targets build the same way
+cargo build --release --target i686-pc-windows-msvc
+
 # cargo clippy --all-targets -- -D warnings
 # cargo test
+# cargo test --target i686-pc-windows-msvc
 ```
 
 ## Reference

@@ -514,6 +514,13 @@ unsafe fn frame(v: &mut Vk,) -> bool {
 #[test]
 fn vulkan_survives_window_transitions() {
     unsafe {
+        // this test (and the backend) carries VkInstance/VkDevice as u64, which
+        // only matches the ABI when pointers are 64-bit wide
+        if cfg!(target_pointer_width = "32")
+        {
+            eprintln!("[vk] 32-bit Vulkan needs pointer-sized handles, skipping");
+            return;
+        }
         let mut win = match support::TestWindow::create("vk", 1280, 720,)
         {
             Some(w,) => w,

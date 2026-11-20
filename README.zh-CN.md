@@ -1,6 +1,6 @@
 <h3>&nbsp; <a href="README.md">English</a> | <a href="README.zh-CN.md">中文</a> &nbsp;</h3>
 
-## **Direct3D 11 / 12 / D3D11on12 / OpenGL / Vulkan** 覆盖层框架，按交换链自动识别后端。
+## **Direct3D 9 / 11 / 12 / D3D11on12 / OpenGL / Vulkan** 覆盖层框架，**x86 与 x86-64** 通用，按交换链自动识别后端。
 
 <img src="assets/screenshots/Dying Light.png" width="360" alt="Dying Light"> <img src="assets/screenshots/Resident Evil 4.png" width="360" alt="Resident Evil 4">
 
@@ -110,8 +110,12 @@ pub unsafe extern "system" fn DllMain(_h: *mut std::ffi::c_void, reason: u32, _r
 # debug 构建写 `<dll名>.log`（DLL 同目录），release 构建不写日志
 cargo build --release
 
+# 32 位目标同样可以构建
+cargo build --release --target i686-pc-windows-msvc
+
 # cargo clippy --all-targets -- -D warnings
 # cargo test
+# cargo test --target i686-pc-windows-msvc
 ```
 
 ## 参考

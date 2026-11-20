@@ -511,6 +511,15 @@ unsafe fn hook_one(name: &str, target: usize, detour_fn: usize, slot: &AtomicUsi
 }
 
 pub unsafe fn install() -> bool {
+    // VkInstance/VkDevice/VkQueue/VkCommandBuffer are pointers; every signature in
+    // this backend and in render/vk.rs carries them as u64, which only matches the
+    // ABI when pointers are 64-bit. Enabling it on x86 would shift the stack
+    // arguments of every hooked entry point, so the backend stays off there.
+    if cfg!(target_pointer_width = "32")
+    {
+        log_warn!("vk", "Vulkan backend needs pointer-sized dispatchable handles, skipped on 32-bit");
+        return false;
+    }
     if INSTALLED.swap(true, Ordering::SeqCst,)
     {
         return true;

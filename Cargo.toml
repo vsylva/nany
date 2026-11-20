@@ -31,10 +31,11 @@ crate-type = ["rlib"]
 egui = { version = "=0.37.0", default-features = false, features = [
     "default_fonts",
 ] }
-min_hook_rs = { version = "=2.2.1", default-features = false }
+naly = { git = "https://github.com/vsylva/naly.git" }
 windows = { version = "=0.58.0", default-features = false, features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D9",
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Direct3D11on12",
     "Win32_Graphics_Direct3D12",

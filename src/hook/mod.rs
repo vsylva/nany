@@ -1,6 +1,7 @@
 use crate::{log_error, log_info};
 
 pub mod detour;
+pub mod d3d9;
 pub mod dxgi;
 pub mod gl;
 pub mod vk;

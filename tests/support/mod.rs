@@ -83,8 +83,15 @@ unsafe extern "system" {
     pub fn AdjustWindowRect(r: *mut Rect, style: u32, menu: i32,) -> i32;
     pub fn GetClientRect(h: Hwnd, r: *mut Rect,) -> i32;
     pub fn SetWindowPos(h: Hwnd, after: isize, x: i32, y: i32, cx: i32, cy: i32, flags: u32,) -> i32;
+    // the *Ptr* exports only exist in 64-bit user32; 32-bit code uses the LONG pair
+    #[cfg(target_arch = "x86_64")]
     pub fn SetWindowLongPtrA(h: Hwnd, index: i32, value: isize,) -> isize;
+    #[cfg(target_arch = "x86_64")]
     pub fn GetWindowLongPtrA(h: Hwnd, index: i32,) -> isize;
+    #[cfg(target_arch = "x86")]
+    pub fn SetWindowLongA(h: Hwnd, index: i32, value: i32,) -> i32;
+    #[cfg(target_arch = "x86")]
+    pub fn GetWindowLongA(h: Hwnd, index: i32,) -> i32;
     pub fn PeekMessageW(m: *mut Msg, h: Hwnd, min: u32, max: u32, remove: u32,) -> i32;
     pub fn TranslateMessage(m: *const Msg,) -> i32;
     pub fn DispatchMessageW(m: *const Msg,) -> isize;
@@ -97,6 +104,23 @@ pub const PM_REMOVE: u32 = 1;
 
 pub unsafe extern "system" fn wnd_proc(h: Hwnd, m: u32, w: usize, l: isize,) -> isize {
     DefWindowProcA(h, m, w, l,)
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn style_get(h: Hwnd, index: i32,) -> isize {
+    GetWindowLongPtrA(h, index,)
+}
+#[cfg(target_arch = "x86")]
+unsafe fn style_get(h: Hwnd, index: i32,) -> isize {
+    GetWindowLongA(h, index,) as isize
+}
+#[cfg(target_arch = "x86_64")]
+unsafe fn style_set(h: Hwnd, index: i32, value: isize,) {
+    SetWindowLongPtrA(h, index, value,);
+}
+#[cfg(target_arch = "x86")]
+unsafe fn style_set(h: Hwnd, index: i32, value: isize,) {
+    SetWindowLongA(h, index, value as i32,);
 }
 
 pub struct TestWindow {
@@ -162,7 +186,7 @@ impl TestWindow {
         self.width = w.max(1,);
         self.height = h.max(1,);
         let mut rc = Rect { left: 0, top: 0, right: self.width as i32, bottom: self.height as i32, };
-        let style = GetWindowLongPtrA(self.hwnd, GWL_STYLE,) as u32;
+        let style = style_get(self.hwnd, GWL_STYLE,) as u32;
         AdjustWindowRect(&mut rc, style, 0,);
         SetWindowPos(
             self.hwnd,
@@ -177,7 +201,7 @@ impl TestWindow {
     }
 
     pub unsafe fn set_style(&mut self, style: u32,) {
-        SetWindowLongPtrA(self.hwnd, GWL_STYLE, style as isize,);
+        style_set(self.hwnd, GWL_STYLE, style as isize,);
         SetWindowPos(self.hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,);
         self.pump(2,);
     }
@@ -185,7 +209,7 @@ impl TestWindow {
     pub unsafe fn borderless_fullscreen(&mut self,) {
         let w = GetSystemMetrics(0,).max(640,) as u32;
         let h = GetSystemMetrics(1,).max(480,) as u32;
-        SetWindowLongPtrA(self.hwnd, GWL_STYLE, WS_POPUP as isize,);
+        style_set(self.hwnd, GWL_STYLE, WS_POPUP as isize,);
         SetWindowPos(self.hwnd, HWND_TOP, 0, 0, w as i32, h as i32, SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW,);
         self.width = w;
         self.height = h;
@@ -193,7 +217,7 @@ impl TestWindow {
     }
 
     pub unsafe fn windowed(&mut self, w: u32, h: u32,) {
-        SetWindowLongPtrA(self.hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW as isize,);
+        style_set(self.hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW as isize,);
         self.width = w;
         self.height = h;
         let mut rc = Rect { left: 0, top: 0, right: w as i32, bottom: h as i32, };

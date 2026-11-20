@@ -104,15 +104,20 @@ pub unsafe fn modules() -> Vec<(String, usize,),> {
         max_len: u16,
         buf:     *mut u16,
     }
-    const PEB_LDR: usize = 0x18;
-    const LDR_LIST: usize = 0x10;
-    const ENTRY_BASE: usize = 0x30;
-    const ENTRY_NAME: usize = 0x58;
+    const PEB_LDR: usize = if cfg!(target_pointer_width = "64") { 0x18 } else { 0x0C };
+    const LDR_LIST: usize = if cfg!(target_pointer_width = "64") { 0x10 } else { 0x0C };
+    const ENTRY_BASE: usize = if cfg!(target_pointer_width = "64") { 0x30 } else { 0x18 };
+    const ENTRY_NAME: usize = if cfg!(target_pointer_width = "64") { 0x58 } else { 0x2C };
 
     let mut out = Vec::new();
     #[cfg(target_arch = "x86_64")]
     let peb: *const u8;
+    #[cfg(target_arch = "x86_64")]
     std::arch::asm!("mov {}, gs:[0x60]", out(reg) peb, options(nostack, readonly));
+    #[cfg(target_arch = "x86")]
+    let peb: *const u8;
+    #[cfg(target_arch = "x86")]
+    std::arch::asm!("mov {}, fs:[0x30]", out(reg) peb, options(nostack, readonly));
     if peb.is_null()
     {
         return out;
@@ -243,6 +248,12 @@ unsafe fn build() -> Option<Win32,> {
         if imm32dll == 0 { std::ptr::null() } else { gpa(imm32dll, n.as_ptr(),) }
     };
 
+    // SetWindowLongPtrW is a macro in the 32-bit SDK: the export is SetWindowLongW
+    #[cfg(target_arch = "x86_64")]
+    let set_window_long = u(b"SetWindowLongPtrW\0",);
+    #[cfg(target_arch = "x86")]
+    let set_window_long = u(b"SetWindowLongW\0",);
+
     Some(Win32 {
         get_proc_address:     gpa,
         load_library:         lla,
@@ -283,7 +294,7 @@ unsafe fn build() -> Option<Win32,> {
         set_capture:                   std::mem::transmute(u(b"SetCapture\0",),),
         release_capture:               std::mem::transmute(u(b"ReleaseCapture\0",),),
         get_window_text_w:             std::mem::transmute(u(b"GetWindowTextW\0",),),
-        set_window_long_ptr:           std::mem::transmute(u(b"SetWindowLongPtrW\0",),),
+        set_window_long_ptr:           std::mem::transmute(set_window_long,),
         call_window_proc:              std::mem::transmute(u(b"CallWindowProcW\0",),),
         def_window_proc:               std::mem::transmute(u(b"DefWindowProcA\0",),),
         register_class:                std::mem::transmute(u(b"RegisterClassA\0",),),
