@@ -11,11 +11,15 @@
 #![allow(function_casts_as_integer)]
 #![allow(mutable_transmutes)]
 
+use windows::{
+    Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
+    core::{s, w},
+};
+
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
 compile_error!("nany supports Windows on x86_64 and x86");
 
-pub mod api;
 pub mod debug_panel;
 pub mod hook;
 pub mod input;
@@ -75,12 +79,15 @@ pub unsafe fn on_dll_attach_tagged(tag: &str, provider: Box<dyn Provider,>,) {
         log::init(&tag,);
         log_info!("init", format!("worker start (tag={tag})"));
 
-        if !api::ready()
+        let loader_ok = GetModuleHandleW(w!("kernel32.dll"),)
+            .ok()
+            .and_then(|m,| GetProcAddress(m, s!("GetProcAddress"),),)
+            .is_some();
+        if !loader_ok
         {
             log_error!("init", "Win32 loader path is not usable, aborting hook install");
             return;
         }
-        log_info!("init", "api loader ready");
         let _ = hook::dxgi::install();
         {
             let d3d9 = hook::d3d9::install();

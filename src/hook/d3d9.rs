@@ -4,6 +4,8 @@
 //! from a throw-away device built on a hidden window; every device of the same
 //! driver shares those entries.
 
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+
 use std::{
     ffi::c_void,
     sync::{
@@ -259,7 +261,7 @@ pub unsafe fn install() -> bool {
     {
         return true;
     }
-    if crate::api::module_base(w!("d3d9.dll"),) == 0
+    if GetModuleHandleW(w!("d3d9.dll"),).is_err()
     {
         INSTALLED.store(false, Ordering::Release,);
         return false;

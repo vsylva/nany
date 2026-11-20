@@ -1,3 +1,4 @@
+use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use std::{
     ffi::c_void,
     sync::{
@@ -289,7 +290,10 @@ unsafe fn probe_swapchain_d3d12() -> *mut c_void {
         return std::ptr::null_mut();
     }
 
-    let raw_dev = crate::api::resolve(w!("d3d12.dll"), s!("D3D12CreateDevice"),);
+    let raw_dev = GetModuleHandleW(w!("d3d12.dll"),)
+        .ok()
+        .and_then(|m,| GetProcAddress(m, s!("D3D12CreateDevice"),),)
+        .map_or(0, |f,| f as usize,);
     if raw_dev == 0
     {
         win::destroy_window(hwnd, class,);
@@ -314,7 +318,10 @@ unsafe fn probe_swapchain_d3d12() -> *mut c_void {
         }
     };
 
-    let raw_f = crate::api::resolve(w!("dxgi.dll"), s!("CreateDXGIFactory2"),);
+    let raw_f = GetModuleHandleW(w!("dxgi.dll"),)
+        .ok()
+        .and_then(|m,| GetProcAddress(m, s!("CreateDXGIFactory2"),),)
+        .map_or(0, |f,| f as usize,);
     if raw_f == 0
     {
         win::destroy_window(hwnd, class,);
@@ -392,7 +399,10 @@ unsafe fn probe_swapchain() -> *mut c_void {
         log_error!("hook", "probe window creation failed (RegisterClassA/CreateWindowExA)");
         return std::ptr::null_mut();
     }
-    let raw = crate::api::resolve(w!("d3d11.dll"), s!("D3D11CreateDeviceAndSwapChain"),);
+    let raw = GetModuleHandleW(w!("d3d11.dll"),)
+        .ok()
+        .and_then(|m,| GetProcAddress(m, s!("D3D11CreateDeviceAndSwapChain"),),)
+        .map_or(0, |f,| f as usize,);
     if raw == 0
     {
         win::destroy_window(hwnd, class,);
@@ -445,7 +455,10 @@ unsafe fn probe_swapchain() -> *mut c_void {
 }
 
 unsafe fn probe_queue() -> *mut c_void {
-    let raw = crate::api::resolve(w!("d3d12.dll"), s!("D3D12CreateDevice"),);
+    let raw = GetModuleHandleW(w!("d3d12.dll"),)
+        .ok()
+        .and_then(|m,| GetProcAddress(m, s!("D3D12CreateDevice"),),)
+        .map_or(0, |f,| f as usize,);
     if raw == 0
     {
         log_warn!("hook", "d3d12.dll not loaded, skipping d3d12 queue probe");

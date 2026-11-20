@@ -1,3 +1,4 @@
+use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use std::{
     cell::Cell,
     ffi::c_void,
@@ -116,21 +117,21 @@ pub unsafe fn install() -> bool {
     {
         return true;
     }
-    let gl = crate::api::module_base(w!("opengl32.dll"),);
-    if gl == 0
+    let gl = GetModuleHandleW(w!("opengl32.dll"),).unwrap_or_default();
+    if gl.is_invalid()
     {
         INSTALLED.store(false, Ordering::Release,);
         return false;
     }
     let mut ok = false;
     {
-        let p = crate::api::proc_address(gl, s!("wglSwapBuffers"),) as usize;
+        let p = GetProcAddress(gl, s!("wglSwapBuffers"),).map_or(0, |f,| f as usize,);
         ok |= hook_one("wglSwapBuffers", p, detour_wgl_swap as *const () as usize, &ORIG_WGL_SWAP,);
 
-        let gdi = crate::api::module_base(w!("gdi32.dll"),);
-        if gdi != 0
+        let gdi = GetModuleHandleW(w!("gdi32.dll"),).unwrap_or_default();
+        if !gdi.is_invalid()
         {
-            let p = crate::api::proc_address(gdi, s!("SwapBuffers"),) as usize;
+            let p = GetProcAddress(gdi, s!("SwapBuffers"),).map_or(0, |f,| f as usize,);
             ok |= hook_one("SwapBuffers", p, detour_gdi_swap as *const () as usize, &ORIG_GDI_SWAP,);
         }
     }

@@ -99,28 +99,6 @@ unsafe fn set_window_long(h: Hwnd, index: WINDOW_LONG_PTR_INDEX, value: isize,) 
     }
 }
 
-pub unsafe fn window_from_dc(hdc: *mut c_void,) -> Hwnd {
-    if hdc.is_null()
-    {
-        return std::ptr::null_mut();
-    }
-    WindowFromDC(HDC(hdc,),).0
-}
-
-pub unsafe fn CreateEventW(attr: *const c_void, manual: i32, initial: i32, name: *const u16,) -> *mut c_void {
-    let sa = if attr.is_null() { None } else { Some(attr as *const SECURITY_ATTRIBUTES,) };
-    let name = if name.is_null() { PCWSTR::null() } else { PCWSTR(name,) };
-    match windows::Win32::System::Threading::CreateEventW(sa, BOOL(manual,), BOOL(initial,), name,)
-    {
-        Ok(h,) => h.0,
-        Err(_,) => std::ptr::null_mut(),
-    }
-}
-
-pub unsafe fn WaitForSingleObject(h: *mut c_void, ms: u32,) -> u32 {
-    windows::Win32::System::Threading::WaitForSingleObject(HANDLE(h,), ms,).0
-}
-
 pub unsafe fn module_path() -> String {
     let mut buf = [0u16; 512];
     let n = GetModuleFileNameW(GetModuleHandleW(PCWSTR::null(),).unwrap_or_default(), &mut buf,);
@@ -165,23 +143,6 @@ pub unsafe fn exe_dir() -> Option<std::path::PathBuf,> {
         return None;
     }
     std::path::Path::new(&p,).parent().map(|d| d.to_path_buf(),)
-}
-
-pub unsafe fn read<T: Copy,>(va: u64,) -> Option<T,> {
-    if va < 0x10000
-    {
-        return None;
-    }
-    let mut out = std::mem::MaybeUninit::<T,>::uninit();
-    let mut got = 0usize;
-    let ok = ReadProcessMemory(
-        windows::Win32::System::Threading::GetCurrentProcess(),
-        va as *const c_void,
-        out.as_mut_ptr() as *mut c_void,
-        std::mem::size_of::<T,>(),
-        Some(&mut got,),
-    );
-    if ok.is_ok() && got == std::mem::size_of::<T,>() { Some(out.assume_init(),) } else { None }
 }
 
 static WIN_STATE: std::sync::Mutex<Vec<(usize, i32, i32, u64,),>,> = std::sync::Mutex::new(Vec::new(),);
@@ -248,11 +209,6 @@ pub unsafe fn client_size(hwnd: Hwnd,) -> Option<(i32, i32,),> {
     Some(((r.right - r.left).max(1,), (r.bottom - r.top).max(1,),),)
 }
 
-pub unsafe fn client_to_screen(hwnd: Hwnd, x: i32, y: i32,) -> Option<(i32, i32,),> {
-    let mut p = POINT { x, y, };
-    if ClientToScreen(to_hwnd(hwnd), &mut p,).as_bool() { Some((p.x, p.y,),) } else { None }
-}
-
 pub unsafe fn clipboard_text() -> Option<String,> {
     const CF_UNICODETEXT: u32 = 13;
 
@@ -306,69 +262,20 @@ pub unsafe fn set_clipboard_text(s: &str,) {
     let _ = CloseClipboard();
 }
 
-pub unsafe fn ime_move_candidate(hwnd: Hwnd, x: i32, y: i32,) {
-    const CFS_POINT: u32 = 0x0002;
+pub unsafe fn arm_mouse_leave(hwnd: Hwnd,) {
+    const TME_LEAVE: u32 = 0x0000_0002;
 
-    if hwnd.is_null()
-    {
-        return;
-    }
-    let Some((sx, sy,),) = client_to_screen(hwnd, x, y,)
-    else
-    {
-        return;
-    };
-    let himc: HIMC = ImmGetContext(to_hwnd(hwnd),);
-    if himc.0.is_null()
-    {
-        return;
-    }
-    let cf = COMPOSITIONFORM { dwStyle: CFS_POINT, ptCurrentPos: POINT { x: sx, y: sy, }, rcArea: RECT::default() };
-    let _ = ImmSetCompositionWindow(himc, &cf,);
-    let _ = ImmReleaseContext(to_hwnd(hwnd), himc,);
-}
-
-pub unsafe fn screen_to_client_xy(hwnd: Hwnd, x: i32, y: i32,) -> Option<(i32, i32,),> {
-    if hwnd.is_null()
-    {
-        return None;
-    }
-    let mut p = POINT { x, y, };
-    if ScreenToClient(to_hwnd(hwnd), &mut p,).as_bool() { Some((p.x, p.y,),) } else { None }
-}
-
-unsafe fn track_mouse(hwnd: Hwnd, flags: u32,) {
     if hwnd.is_null()
     {
         return;
     }
     let mut t = TRACKMOUSEEVENT {
-        cbSize:    std::mem::size_of::<TRACKMOUSEEVENT,>() as u32,
-        dwFlags:   TRACKMOUSEEVENT_FLAGS(flags,),
-        hwndTrack: to_hwnd(hwnd),
+        cbSize:      std::mem::size_of::<TRACKMOUSEEVENT,>() as u32,
+        dwFlags:     TRACKMOUSEEVENT_FLAGS(TME_LEAVE,),
+        hwndTrack:   to_hwnd(hwnd,),
         dwHoverTime: 0,
     };
     let _ = TrackMouseEvent(&mut t,);
-}
-
-pub unsafe fn arm_mouse_leave(hwnd: Hwnd,) {
-    const TME_LEAVE: u32 = 0x0000_0002;
-    track_mouse(hwnd, TME_LEAVE,);
-}
-
-pub unsafe fn arm_mouse_track(hwnd: Hwnd, non_client: bool,) {
-    const TME_LEAVE: u32 = 0x0000_0002;
-    const TME_NONCLIENT: u32 = 0x0000_0010;
-    track_mouse(hwnd, if non_client { TME_LEAVE | TME_NONCLIENT } else { TME_LEAVE },);
-}
-
-pub unsafe fn cancel_mouse_track(hwnd: Hwnd,) {
-    const TME_CANCEL: u32 = 0x8000_0000;
-    track_mouse(hwnd, TME_CANCEL,);
-}
-
-pub unsafe fn is_window_unicode(hwnd: Hwnd,) -> bool {
-    !hwnd.is_null() && IsWindowUnicode(to_hwnd(hwnd),).as_bool()
 }
 
 pub unsafe fn ansi_to_wide(code_page: u32, bytes: &[u8],) -> Option<u16,> {
@@ -379,30 +286,6 @@ pub unsafe fn ansi_to_wide(code_page: u32, bytes: &[u8],) -> Option<u16,> {
     let mut out = [0u16; 1];
     let n = MultiByteToWideChar(code_page, MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0x0000_0400,), bytes, Some(&mut out,),);
     if n == 1 { Some(out[0],) } else { None }
-}
-
-pub unsafe fn key_down(vk: i32,) -> bool {
-    (GetKeyState(vk,) as u16 & 0x8000) != 0
-}
-
-pub unsafe fn capture_window() -> Hwnd {
-    GetCapture().0
-}
-
-pub unsafe fn set_capture(hwnd: Hwnd,) -> Hwnd {
-    if hwnd.is_null()
-    {
-        return std::ptr::null_mut();
-    }
-    SetCapture(to_hwnd(hwnd),).0
-}
-
-pub unsafe fn release_capture() {
-    let _ = ReleaseCapture();
-}
-
-pub unsafe fn foreground() -> Hwnd {
-    GetForegroundWindow().0
 }
 
 pub unsafe fn window_pid(hwnd: Hwnd,) -> u32 {
@@ -419,10 +302,6 @@ pub unsafe fn window_title(hwnd: Hwnd,) -> String {
     let mut buf = [0u16; 256];
     let n = GetWindowTextW(to_hwnd(hwnd), &mut buf,);
     if n <= 0 { String::new() } else { String::from_utf16_lossy(&buf[..n as usize],) }
-}
-
-pub unsafe fn screen_metrics(index: i32,) -> i32 {
-    GetSystemMetrics(SYSTEM_METRICS_INDEX(index,),)
 }
 
 struct FindCtx {

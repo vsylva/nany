@@ -1,3 +1,4 @@
+use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use std::{collections::HashMap, ffi::c_void};
 
 use crate::{log_error, log_info};
@@ -249,7 +250,10 @@ impl Painter12 {
         let mut blob: Option<windows::Win32::Graphics::Direct3D::ID3DBlob,> = None;
         let mut err: Option<windows::Win32::Graphics::Direct3D::ID3DBlob,> = None;
 
-        let raw = crate::api::resolve(w!("d3d12.dll"), s!("D3D12SerializeRootSignature"),);
+        let raw = GetModuleHandleW(w!("d3d12.dll"),)
+            .ok()
+            .and_then(|m,| GetProcAddress(m, s!("D3D12SerializeRootSignature"),),)
+            .map_or(0, |f,| f as usize,);
         if raw == 0
         {
             return Err(windows::core::Error::new(
@@ -305,7 +309,9 @@ impl Painter12 {
         list.Close()?;
 
         let fence: ID3D12Fence = device.CreateFence(0, D3D12_FENCE_FLAG_NONE,)?;
-        let event_raw = win::CreateEventW(std::ptr::null(), 0, 0, std::ptr::null(),);
+        let event_raw = windows::Win32::System::Threading::CreateEventW(None, false, false, None)
+            .map(|h| h.0)
+            .unwrap_or(std::ptr::null_mut());
         if event_raw.is_null()
         {
             return Err(windows::core::Error::from_win32(),);
@@ -615,7 +621,7 @@ impl Painter12 {
         let v = self.fence_value;
         let _ = self.queue.Signal(&self.fence, v,);
         let _ = self.fence.SetEventOnCompletion(v, self.event,);
-        win::WaitForSingleObject(self.event.0, u32::MAX,);
+        let _ = windows::Win32::System::Threading::WaitForSingleObject(HANDLE(self.event.0,), u32::MAX,);
 
         self.make_srv(&res, 0,);
         self.white_res = Some(res,);
@@ -630,7 +636,7 @@ impl Painter12 {
         }
         if self.fence.SetEventOnCompletion(value, self.event,).is_ok()
         {
-            win::WaitForSingleObject(self.event.0, u32::MAX,);
+            let _ = windows::Win32::System::Threading::WaitForSingleObject(HANDLE(self.event.0,), u32::MAX,);
         }
     }
 

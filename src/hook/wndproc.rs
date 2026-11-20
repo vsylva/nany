@@ -2,6 +2,17 @@
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use windows::{
+    Win32::{
+        Foundation::{HWND, LPARAM, WPARAM},
+        UI::{
+            Input::KeyboardAndMouse::GetKeyState,
+            WindowsAndMessaging::IsWindowUnicode,
+        },
+    },
+    core::{PCSTR, PCWSTR},
+};
+
 use crate::{input, log_error, log_info, overlay, win};
 
 static ORIG_WNDPROC: AtomicUsize = AtomicUsize::new(0,);
@@ -117,33 +128,33 @@ unsafe fn handle_input(state: u32, wparam: u32, lparam: usize,) {
 
     if vk == VK_SHIFT
     {
-        if win::key_down(VK_LSHIFT,) == down
+        if ((GetKeyState(VK_LSHIFT,) as u16 & 0x8000) != 0) == down
         {
             input::on_key(VK_LSHIFT, down,);
         }
-        if win::key_down(VK_RSHIFT,) == down
+        if ((GetKeyState(VK_RSHIFT,) as u16 & 0x8000) != 0) == down
         {
             input::on_key(VK_RSHIFT, down,);
         }
     }
     else if vk == VK_CONTROL
     {
-        if win::key_down(VK_LCONTROL,) == down
+        if ((GetKeyState(VK_LCONTROL,) as u16 & 0x8000) != 0) == down
         {
             input::on_key(VK_LCONTROL, down,);
         }
-        if win::key_down(VK_RCONTROL,) == down
+        if ((GetKeyState(VK_RCONTROL,) as u16 & 0x8000) != 0) == down
         {
             input::on_key(VK_RCONTROL, down,);
         }
     }
     else if vk == VK_MENU
     {
-        if win::key_down(VK_LMENU,) == down
+        if ((GetKeyState(VK_LMENU,) as u16 & 0x8000) != 0) == down
         {
             input::on_key(VK_LMENU, down,);
         }
-        if win::key_down(VK_RMENU,) == down
+        if ((GetKeyState(VK_RMENU,) as u16 & 0x8000) != 0) == down
         {
             input::on_key(VK_RMENU, down,);
         }
@@ -247,7 +258,7 @@ unsafe fn handle(hwnd: win::Hwnd, msg: u32, w: usize, l: isize,) -> isize {
 
         win::WM_CHAR =>
         {
-            if win::is_window_unicode(hwnd,)
+            if IsWindowUnicode(HWND(hwnd,),).as_bool()
             {
                 input::push_char_utf16(w as u16,);
             }
@@ -280,7 +291,7 @@ unsafe fn handle(hwnd: win::Hwnd, msg: u32, w: usize, l: isize,) -> isize {
         }
         WM_IME_CHAR =>
         {
-            if win::is_window_unicode(hwnd,)
+            if IsWindowUnicode(HWND(hwnd,),).as_bool()
             {
                 input::push_char_utf16(w as u16,);
             }

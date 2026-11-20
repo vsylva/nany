@@ -1,3 +1,4 @@
+use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use std::{collections::HashMap, ffi::c_void};
 
 use windows::core::{s, w};
@@ -632,12 +633,12 @@ impl PainterVK {
     pub unsafe fn new(sc: VkHandle,) -> Option<Self,> {
         let dev: DeviceInfo = device_info()?;
         let info: SwapchainInfo = swapchain_info(sc,)?;
-        let module = crate::api::module_base(w!("vulkan-1.dll"),);
-        if module == 0
+        let module = GetModuleHandleW(w!("vulkan-1.dll"),).unwrap_or_default();
+        if module.is_invalid()
         {
             return None;
         }
-        let raw = crate::api::proc_address(module, s!("vkGetDeviceProcAddr"),);
+        let raw = GetProcAddress(module, s!("vkGetDeviceProcAddr"),).map_or(std::ptr::null(), |f,| f as *const c_void,);
         if raw.is_null()
         {
             return None;
@@ -645,7 +646,7 @@ impl PainterVK {
         let gdpa: PfnGdpa = std::mem::transmute(raw,);
 
         let inst = crate::hook::vk::instance()?;
-        let gipa_raw = crate::api::proc_address(module, s!("vkGetInstanceProcAddr"),);
+        let gipa_raw = GetProcAddress(module, s!("vkGetInstanceProcAddr"),).map_or(std::ptr::null(), |f,| f as *const c_void,);
         if gipa_raw.is_null()
         {
             return None;

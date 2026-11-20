@@ -74,7 +74,7 @@ fn user_button_state_produces_one_edge_per_change() {
 fn user_key_state_feeds_hotkey() {
     let _g = guard();
     unsafe {
-        let down = nany::win::key_down(0x2D,);
+        let down = (windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x2D,) as u16 & 0x8000) != 0;
         input::on_key(0x2D, down,);
         assert_eq!(input::hotkey(0x2D), down);
     }

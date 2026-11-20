@@ -900,7 +900,12 @@ pub unsafe fn on_vk_present(queue: u64, swapchain: u64, image_index: u32,) -> Op
 }
 
 pub unsafe fn on_gl_present(hdc: *mut c_void,) {
-    let hwnd = win::window_from_dc(hdc,);
+    if hdc.is_null()
+    {
+        return;
+    }
+    // `HDC` -> window, straight from windows-rs
+    let hwnd = windows::Win32::Graphics::Gdi::WindowFromDC(windows::Win32::Graphics::Gdi::HDC(hdc,),).0;
     let Some((w, h,),) = win::client_size_cached(hwnd,).or_else(|| {
         let s = win::client_size(hwnd,);
         if let Some((cw, ch,),) = s
