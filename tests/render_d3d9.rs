@@ -221,8 +221,131 @@ unsafe fn backbuffer_size(device: &IDirect3DDevice9) -> Option<(u32, u32)> {
     Some((desc.Width, desc.Height))
 }
 
+/// Tests in this binary share the process-wide overlay registry (the menu test
+/// installs the hooks), so they run one after another.
+static SERIAL: Mutex<()> = Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    match SERIAL.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    }
+}
+
+/// A 32x32 atlas with a one-texel white cross at (9, 9), plus the quad that
+/// draws it 1:1 into the top-left corner of the back buffer.
+unsafe fn cross_painter(
+    device: &IDirect3DDevice9,
+) -> (nany::render::d3d9::Painter9, [egui::ClippedPrimitive; 1]) {
+    let mut painter = nany::render::d3d9::Painter9::new(device).expect("d3d9 painter");
+
+    let mut pixels = vec![egui::Color32::TRANSPARENT; 32 * 32];
+    for i in 0..32 {
+        pixels[9 * 32 + i] = egui::Color32::WHITE;
+        pixels[i * 32 + 9] = egui::Color32::WHITE;
+    }
+    let atlas = egui::ColorImage::new([32, 32], pixels);
+
+    let mut deltas = egui::TexturesDelta::default();
+    deltas.set.entry(egui::TextureId::Managed(0)).or_default().push(egui::epaint::ImageDelta::full(
+        egui::ImageData::Color(std::sync::Arc::new(atlas)),
+        egui::TextureOptions::LINEAR,
+    ));
+    painter.apply_textures(&deltas);
+    deltas.clear();
+
+    let mut mesh = egui::Mesh { texture_id: egui::TextureId::Managed(0), ..Default::default() };
+    mesh.add_rect_with_uv(
+        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(32.0, 32.0)),
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+        egui::Color32::WHITE,
+    );
+    let prims = [egui::ClippedPrimitive {
+        clip_rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 240.0)),
+        primitive: egui::epaint::Primitive::Mesh(mesh),
+    }];
+    (painter, prims)
+}
+
+/// Clear, draw and read the cross back: (row through y=20, column through x=20).
+unsafe fn cross_pixels(
+    painter: &mut nany::render::d3d9::Painter9,
+    device: &IDirect3DDevice9,
+    prims: &[egui::ClippedPrimitive],
+) -> (Vec<u8>, Vec<u8>) {
+    let _ = device.Clear(0, std::ptr::null(), D3DCLEAR_TARGET as u32, 0, 1.0, 0);
+    painter.paint(prims, (320, 240));
+    let shot = read_back(device, 320, 240).expect("back buffer readback");
+    let row: Vec<u8> = (0..32).map(|x| shot.at(x, 20).0).collect();
+    let col: Vec<u8> = (0..32).map(|y| shot.at(20, y).0).collect();
+    (row, col)
+}
+
+fn assert_cross(row: &[u8], col: &[u8], what: &str) {
+    println!("[d3d9] {what} row y=20 {row:?}");
+    println!("[d3d9] {what} col x=20 {col:?}");
+    assert!(row[9] > 200, "{what}: the atlas column did not land on x=9: {row:?}");
+    assert!(col[9] > 200, "{what}: the atlas row did not land on y=9: {col:?}");
+    let bleed_row: u32 = row.iter().enumerate().filter(|(i, _)| *i != 9).map(|(_, v)| *v as u32).sum();
+    let bleed_col: u32 = col.iter().enumerate().filter(|(i, _)| *i != 9).map(|(_, v)| *v as u32).sum();
+    assert!(bleed_row < 24, "{what}: the atlas column is sampled between texels: {row:?}");
+    assert!(bleed_col < 24, "{what}: the atlas row is sampled between texels: {col:?}");
+}
+
+/// The painter has to map mesh pixels onto back-buffer pixels 1:1. When the
+/// atlas is sampled half a texel off, every glyph edge is spread over two
+/// pixels, which is exactly the "d3d9 text looks soft" report: a one-texel
+/// cross in the atlas must land on one pixel, not on a 2x2 blend.
+#[test]
+fn d3d9_samples_the_atlas_texel_exact() {
+    let _serial = serial();
+    unsafe {
+        let win = match support::TestWindow::create("d3d9atlas", 320, 240) {
+            Some(w) => w,
+            None => panic!("window creation failed"),
+        };
+        let device = make_device(&win).expect("D3D9 device");
+        let (mut painter, prims) = cross_painter(&device);
+        let (row, col) = cross_pixels(&mut painter, &device, &prims);
+        assert_cross(&row, &col, "first paint");
+    }
+}
+
+/// A `Reset` (alt-tab back into a fullscreen game, a resolution change, a device
+/// loss the game recovered from) invalidates every device object of the painter.
+/// The atlas has to come back from the CPU copy: egui handed its texture deltas
+/// over once and will not send them again, so a painter that waits for a new
+/// delta draws white blocks instead of text - or, if the rebuild never happens,
+/// nothing at all.
+#[test]
+fn d3d9_rebuild_restores_the_atlas_after_reset() {
+    let _serial = serial();
+    unsafe {
+        let win = match support::TestWindow::create("d3d9rebuild", 320, 240) {
+            Some(w) => w,
+            None => panic!("window creation failed"),
+        };
+        let device = make_device(&win).expect("D3D9 device");
+        let (mut painter, prims) = cross_painter(&device);
+        let (row, col) = cross_pixels(&mut painter, &device, &prims);
+        assert_cross(&row, &col, "before reset");
+
+        // exactly what the Reset hook does around the original Reset call
+        painter.release_target();
+        assert!(!painter.ready(), "the painter must be stale after release_target");
+        let (row, _col) = cross_pixels(&mut painter, &device, &prims);
+        assert!(row.iter().all(|v| *v == 0), "a stale painter must not draw: {row:?}");
+
+        assert!(painter.rebuild(), "the painter refused to rebuild");
+        assert!(painter.ready());
+        let (row, col) = cross_pixels(&mut painter, &device, &prims);
+        assert_cross(&row, &col, "after rebuild");
+    }
+}
+
 #[test]
 fn d3d9_renders_the_menu() {
+    let _serial = serial();
     unsafe {
         let mut win = match support::TestWindow::create("d3d9", 1280, 720) {
             Some(w) => w,

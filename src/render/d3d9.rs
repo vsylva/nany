@@ -32,6 +32,13 @@ use crate::log_info;
 
 /// Shader model 3.0 covers anything from 2004 on; 2.0 is the fallback for the
 /// rare old driver.
+///
+/// D3D9 samples the render target at *integer* coordinates (the centre of pixel
+/// (0,0) is at 0,0), while D3D10+ and every other backend here use half-integer
+/// centres. Without the half-pixel shift the whole mesh lands half a pixel off
+/// and every glyph edge is blended across two pixels by the linear atlas
+/// sampler, which is what makes d3d9 text look soft. `- 0.5` puts the mesh back
+/// on texel centres.
 const HLSL: &str = r#"
 float4 uParams : register(c0);
 
@@ -40,7 +47,7 @@ struct PSIn  { float4 pos : POSITION; float2 uv : TEXCOORD0; float4 col : COLOR0
 
 PSIn vs_main(VSIn i) {
     PSIn o;
-    float2 p = i.pos / uParams.xy * 2.0 - 1.0;
+    float2 p = (i.pos - 0.5) / uParams.xy * 2.0 - 1.0;
     o.pos = float4(p.x, -p.y, 0.0, 1.0);
     o.uv = i.uv;
     o.col = i.col;
@@ -67,7 +74,17 @@ struct TexEntry {
     w:    usize,
     h:    usize,
     data: Vec<u8,>,
-    tex:  IDirect3DTexture9,
+    /// `None` until the upload succeeds; the data above stays either way.
+    tex:  Option<IDirect3DTexture9,>,
+}
+
+/// The device-owned objects of the painter. Everything in here is invalidated
+/// by `IDirect3DDevice9::Reset` and has to be built again afterwards.
+struct Objects {
+    vs:    IDirect3DVertexShader9,
+    ps:    IDirect3DPixelShader9,
+    decl:  IDirect3DVertexDeclaration9,
+    white: IDirect3DTexture9,
 }
 
 pub struct Painter9 {
@@ -83,6 +100,11 @@ pub struct Painter9 {
     tex:    HashMap<u64, TexEntry,>,
     size:   (u32, u32,),
     warned: bool,
+    /// Set when the device went lost, was reset, or a rebuild failed: every
+    /// device-owned object has to be created again before the next draw. The
+    /// CPU copy of the atlas stays around, so text comes back without egui
+    /// sending the texture deltas a second time.
+    stale:  bool,
     pub device_raw: usize,
 }
 
@@ -139,12 +161,12 @@ unsafe fn make_texture(device: &IDirect3DDevice9, w: usize, h: usize, data: &[u8
 }
 
 impl Painter9 {
-    pub unsafe fn new(device: &IDirect3DDevice9,) -> Result<Self,> {
-        let fail = |msg: String| Error::new(HRESULT(0x8000_4005u32 as i32,), msg,);
-        let (vs_code, ps_code,) = compile_pair().ok_or_else(|| fail("shader compile failed".into(),),)?;
-
-        let vs = device.CreateVertexShader(vs_code.as_ptr() as *const u32,).map_err(|e| fail(e.message(),),)?;
-        let ps = device.CreatePixelShader(ps_code.as_ptr() as *const u32,).map_err(|e| fail(e.message(),),)?;
+    /// Everything the device owns: shaders, the input declaration and the white
+    /// texel. Called once on creation and again after every device reset.
+    unsafe fn create_objects(device: &IDirect3DDevice9,) -> Option<Objects,> {
+        let (vs_code, ps_code,) = compile_pair()?;
+        let vs = device.CreateVertexShader(vs_code.as_ptr() as *const u32,).ok()?;
+        let ps = device.CreatePixelShader(ps_code.as_ptr() as *const u32,).ok()?;
 
         let elements = [
             D3DVERTEXELEMENT9 {
@@ -173,9 +195,12 @@ impl Painter9 {
             },
             DECL_END,
         ];
-        let decl = device.CreateVertexDeclaration(elements.as_ptr(),).map_err(|e| fail(e.message(),),)?;
+        let decl = device.CreateVertexDeclaration(elements.as_ptr(),).ok()?;
+        let white = make_texture(device, 1, 1, &[255u8,],)?;
+        Some(Objects { vs, ps, decl, white, },)
+    }
 
-        let white = make_texture(device, 1, 1, &[255u8,],).ok_or_else(|| fail("white texture failed".into(),),)?;
+    unsafe fn backbuffer_size(device: &IDirect3DDevice9,) -> (u32, u32,) {
         let mut size = (0u32, 0u32,);
         if let Ok(backbuffer,) = device.GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO,)
         {
@@ -185,20 +210,27 @@ impl Painter9 {
                 size = (desc.Width, desc.Height,);
             }
         }
+        size
+    }
+
+    pub unsafe fn new(device: &IDirect3DDevice9,) -> Result<Self,> {
+        let fail = |msg: String| Error::new(HRESULT(0x8000_4005u32 as i32,), msg,);
+        let objects = Self::create_objects(device,).ok_or_else(|| fail("d3d9 objects failed".into(),),)?;
 
         Ok(Painter9 {
             device: ManuallyDrop::new(IDirect3DDevice9::from_raw(device.as_raw(),),),
-            vs,
-            ps,
-            decl,
+            vs: objects.vs,
+            ps: objects.ps,
+            decl: objects.decl,
             vb: None,
             ib: None,
             vb_cap: 0,
             ib_cap: 0,
-            white,
+            white: objects.white,
             tex: HashMap::new(),
-            size,
+            size: Self::backbuffer_size(device,),
             warned: false,
+            stale: false,
             device_raw: device.as_raw() as usize,
         },)
     }
@@ -207,13 +239,77 @@ impl Painter9 {
         self.size
     }
 
-    /// Drop default-pool buffers; called from the `Reset` hook.
+    /// True while every device object is usable and the painter may draw.
+    pub unsafe fn ready(&self,) -> bool {
+        !self.stale
+    }
+
+    /// The device is gone: `TestCooperativeLevel` failed or `Present` came back
+    /// with `D3DERR_DEVICELOST`. Nothing may be created until a `Reset` went
+    /// through, but the CPU copy of every texture stays, so a rebuild does not
+    /// need egui to send the atlas again.
+    pub unsafe fn mark_lost(&mut self,) {
+        self.stale = true;
+        self.warned = false;
+        self.unbind();
+    }
+
+    /// Unbind everything we put into the device state. A `Reset` fails while
+    /// any default-pool buffer is still referenced by the pipeline, so this has
+    /// to happen before the game resets, not after.
+    unsafe fn unbind(&mut self,) {
+        let _ = self.device.SetStreamSource(0, None, 0, 0,);
+        let _ = self.device.SetIndices(None,);
+        let _ = self.device.SetVertexShader(None,);
+        let _ = self.device.SetPixelShader(None,);
+        let _ = self.device.SetVertexDeclaration(None,);
+        let _ = self.device.SetTexture(0, None,);
+    }
+
+    /// Drop default-pool buffers and mark the device objects stale; called from
+    /// the `Reset` hook before the game resets.
     pub unsafe fn release_target(&mut self,) {
+        self.unbind();
         self.vb = None;
         self.ib = None;
         self.vb_cap = 0;
         self.ib_cap = 0;
         self.size = (0, 0,);
+        self.stale = true;
+    }
+
+    /// Build the device objects and the atlas again after a successful reset.
+    /// The texture data is kept on the CPU side, so glyphs reappear even though
+    /// egui has already handed its deltas over once.
+    pub unsafe fn rebuild(&mut self,) -> bool {
+        let Some(objects,) = Self::create_objects(&self.device,)
+        else
+        {
+            return false;
+        };
+        self.vs = objects.vs;
+        self.ps = objects.ps;
+        self.decl = objects.decl;
+        self.white = objects.white;
+
+        let (w, h,) = Self::backbuffer_size(&self.device,);
+
+        let mut rebuilt = HashMap::with_capacity(self.tex.len(),);
+        for (key, entry,) in self.tex.drain()
+        {
+            let tex = make_texture(&self.device, entry.w, entry.h, &entry.data,);
+            rebuilt.insert(key, TexEntry { tex, ..entry },);
+        }
+        self.tex = rebuilt;
+
+        self.vb = None;
+        self.ib = None;
+        self.vb_cap = 0;
+        self.ib_cap = 0;
+        self.size = (w, h,);
+        self.warned = false;
+        self.stale = false;
+        true
     }
 
     pub unsafe fn ensure_target(&mut self, w: u32, h: u32,) {
@@ -234,10 +330,10 @@ impl Painter9 {
                 {
                     None =>
                     {
-                        if let Some(tex,) = make_texture(&self.device, w, h, &alpha,)
-                        {
-                            self.tex.insert(key, TexEntry { w, h, data: alpha, tex, },);
-                        }
+                        // keep the CPU copy even when the upload fails (lost
+                        // device): `fill_missing_textures` retries it later
+                        let tex = make_texture(&self.device, w, h, &alpha,);
+                        self.tex.insert(key, TexEntry { w, h, data: alpha, tex, },);
                     }
                     Some([x, y,],) =>
                     {
@@ -258,10 +354,8 @@ impl Painter9 {
                             }
                         }
                         let (ow, oh,) = (old.w, old.h,);
-                        if let Some(tex,) = make_texture(&self.device, ow, oh, &buf,)
-                        {
-                            self.tex.insert(key, TexEntry { w: ow, h: oh, data: buf, tex, },);
-                        }
+                        let tex = make_texture(&self.device, ow, oh, &buf,);
+                        self.tex.insert(key, TexEntry { w: ow, h: oh, data: buf, tex, },);
                     }
                 }
             }
@@ -270,6 +364,22 @@ impl Painter9 {
         {
             self.tex.remove(&mesh::tex_key(*id,),);
         }
+    }
+
+    /// Upload anything whose texture object is missing (a create call failed
+    /// while the device was lost, or a reset dropped it). Without this the mesh
+    /// keeps drawing the white texel and the menu turns into solid blocks.
+    unsafe fn fill_missing_textures(&mut self,) -> bool {
+        let mut all = true;
+        for entry in self.tex.values_mut()
+        {
+            if entry.tex.is_none()
+            {
+                entry.tex = make_texture(&self.device, entry.w, entry.h, &entry.data,);
+                all &= entry.tex.is_some();
+            }
+        }
+        all
     }
 
     pub unsafe fn tex_count(&self,) -> usize {
@@ -326,6 +436,12 @@ impl Painter9 {
     }
 
     pub unsafe fn paint(&mut self, prims: &[egui::ClippedPrimitive], screen: (u32, u32,),) {
+        if self.stale
+        {
+            // the painter still owns the atlas on the CPU side, but no device
+            // object may be touched until `rebuild` succeeded after a reset
+            return;
+        }
         if self.device.TestCooperativeLevel().is_err()
         {
             if !self.warned
@@ -333,6 +449,7 @@ impl Painter9 {
                 log_info!("d3d9", "device not ready, holding off until Reset");
                 self.warned = true;
             }
+            self.mark_lost();
             return;
         }
         self.warned = false;
@@ -342,6 +459,9 @@ impl Painter9 {
         {
             return;
         }
+        // a texture whose upload failed earlier gets another chance now that the
+        // device is known to be usable
+        let _ = self.fill_missing_textures();
 
         // D3D9 rejects every draw call outside of a BeginScene/EndScene pair, and
         // Present runs after the game closed its scene. Open one when needed; when
@@ -454,7 +574,7 @@ impl Painter9 {
         {
             let texture = match self.tex.get(&draw.tex,)
             {
-                Some(entry,) => entry.tex.clone(),
+                Some(entry,) => entry.tex.clone().unwrap_or_else(|| self.white.clone(),),
                 None => self.white.clone(),
             };
             let _ = device.SetTexture(0, &texture,);

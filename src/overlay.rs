@@ -99,6 +99,11 @@ struct Overlay {
     pass_ms: f32,
 
     backend: Option<Backend,>,
+
+    /// D3D9 only: earliest instant for the next painter creation attempt. A
+    /// failed creation (lost device, out of memory) must never latch, otherwise
+    /// the overlay is gone for the rest of the process.
+    d3d9_retry_at: Option<Instant,>,
 }
 
 unsafe fn apply_all(deltas: &mut [egui::TexturesDelta], mut apply: impl FnMut(&egui::TexturesDelta,),) {
@@ -247,6 +252,16 @@ impl Overlay {
             prims_size: (0, 0,),
             pass_ms: 0.0,
             backend: None,
+            d3d9_retry_at: None,
+        }
+    }
+
+    /// Drop stashed texture deltas without tripping epaint's "unapplied delta"
+    /// assertion on drop.
+    unsafe fn clear_pending(&mut self,) {
+        for mut delta in std::mem::take(&mut self.pending_tex,)
+        {
+            delta.clear();
         }
     }
 
@@ -257,7 +272,7 @@ impl Overlay {
         }
         log_info!("ui", "backend rebuilt, resetting egui context for full texture upload");
         self.ctx = Self::make_ctx();
-        self.pending_tex.clear();
+        self.clear_pending();
         // the old tessellation references texture ids of the old context
         self.last_prims = None;
     }
@@ -606,6 +621,26 @@ impl Overlay {
 
     unsafe fn frame_d3d9(&mut self, device_raw: *mut c_void,) {
         let device: ManuallyDrop<IDirect3DDevice9,> = ManuallyDrop::new(IDirect3DDevice9::from_raw(device_raw,),);
+
+        // A lost device refuses every new GPU object, and creating the painter
+        // while it is lost is what used to leave the overlay dead for good. Hold
+        // the frame instead: everything we need (atlas on the CPU side, egui
+        // context, tessellation) survives, and the Reset hook rebuilds.
+        if device.TestCooperativeLevel().is_err()
+        {
+            if let Renderer::Dx9(p,) = &mut self.renderer
+            {
+                p.mark_lost();
+            }
+            if !self.warned
+            {
+                log_info!("d3d9", "device lost, waiting for the game's Reset");
+                self.warned = true;
+            }
+            return;
+        }
+        self.warned = false;
+
         let (t0, dt,) = self.tick();
 
         if self.hwnd == 0
@@ -649,7 +684,23 @@ impl Overlay {
 
         let (mut tex_deltas, captured,) = self.ui_pass(w, h, Backend::D3D9.label(), dt,);
 
-        if !matches!(self.renderer, Renderer::Dx9(_)) && !self.renderer_failed
+        // Keep the painter across resets and device loss: it holds the only copy
+        // of the glyph atlas. Rebuild it in place, and only fall back to a fresh
+        // painter (which needs a fresh egui context for a full upload) when there
+        // is none yet or the rebuild failed.
+        if let Renderer::Dx9(p,) = &mut self.renderer
+        {
+            if !p.ready() && p.rebuild()
+            {
+                log_info!("d3d9", "painter rebuilt in place after reset");
+            }
+        }
+        let usable = match &self.renderer
+        {
+            Renderer::Dx9(p,) => p.ready(),
+            _ => false,
+        };
+        if !usable && self.d3d9_retry_due()
         {
             self.before_rebuild();
             match render::d3d9::Painter9::new(&device,)
@@ -658,12 +709,14 @@ impl Overlay {
                 {
                     self.renderer = Renderer::Dx9(p,);
                     self.ever_rendered = true;
+                    self.renderer_failed = false;
+                    self.d3d9_retry_at = None;
                     log_info!("d3d9", "painter created");
                 }
                 Err(e,) =>
                 {
-                    log_error!("d3d9", format!("painter failed: {e}"));
-                    self.renderer_failed = true;
+                    self.d3d9_retry_at = Some(Instant::now() + std::time::Duration::from_millis(250,),);
+                    log_error!("d3d9", format!("painter failed (retrying): {e}"));
                 }
             }
         }
@@ -687,6 +740,15 @@ impl Overlay {
         }
 
         self.finish_frame(t0, Backend::D3D9, w, h, captured,);
+    }
+
+    /// True when enough time has passed since the last failed painter creation.
+    unsafe fn d3d9_retry_due(&self,) -> bool {
+        match self.d3d9_retry_at
+        {
+            Some(at,) => Instant::now() >= at,
+            None => true,
+        }
     }
 
     unsafe fn frame_gl(&mut self, hwnd: usize, w: u32, h: u32,) {
@@ -878,34 +940,73 @@ pub unsafe fn on_present_d3d9(device: *mut c_void,) {
     },);
 }
 
-/// Called from the `Reset` hook: default-pool buffers have to go first.
+/// Called from the `Reset` hook: default-pool buffers and every pipeline binding
+/// of ours have to go before the game resets, and the painter is marked stale.
+/// The egui context, the tessellation and the CPU copy of the atlas stay, so the
+/// menu comes back on the very next frame instead of being rebuilt from scratch.
 pub unsafe fn on_reset_d3d9(device: *mut c_void,) {
+    if device.is_null()
+    {
+        return;
+    }
     let key = (device as usize as u64) | D3D9_KEY;
     with_existing(key, |st| {
         if let Renderer::Dx9(p,) = &mut st.renderer
         {
             p.release_target();
-            log_info!("resize", "dx9 buffers released before Reset");
+            log_info!("resize", "dx9 device objects released before Reset");
         }
-        st.renderer = Renderer::None;
-        st.pending_tex.clear();
-        st.last_prims = None;
+        st.renderer_failed = false;
+        st.d3d9_retry_at = None;
     },);
 }
 
-pub unsafe fn on_lost_d3d9(device: *mut c_void,) {
+/// Called right after the original `Reset` returned. A successful reset gives a
+/// usable device again, so the painter rebuilds immediately (shaders, buffers
+/// and the atlas from its CPU copy); a refused reset leaves it stale until the
+/// next attempt.
+pub unsafe fn on_reset_done_d3d9(device: *mut c_void, hr: i32,) {
+    if device.is_null()
+    {
+        return;
+    }
     let key = (device as usize as u64) | D3D9_KEY;
     with_existing(key, |st| {
-        if matches!(st.renderer, Renderer::None)
+        st.renderer_failed = false;
+        st.d3d9_retry_at = None;
+        if hr < 0
         {
+            log_info!("resize", format!("dx9 Reset refused hr=0x{hr:08X}, staying stale"));
             return;
         }
-        log_info!("device", "d3d9 device lost, dropping painter");
-        st.renderer = Renderer::None;
-        st.renderer_failed = false;
-        st.pending_tex.clear();
-        st.last_prims = None;
-        st.ctx = Overlay::make_ctx();
+        if let Renderer::Dx9(p,) = &mut st.renderer
+        {
+            let ok = p.rebuild();
+            log_info!("resize", format!("dx9 Reset ok, painter rebuilt = {ok}"));
+        }
+    },);
+}
+
+/// The device reported `D3DERR_DEVICELOST`. Keep the painter (it owns the atlas)
+/// and the egui context; drawing resumes after the game resets the device.
+pub unsafe fn on_lost_d3d9(device: *mut c_void,) {
+    if device.is_null()
+    {
+        return;
+    }
+    let key = (device as usize as u64) | D3D9_KEY;
+    with_existing(key, |st| {
+        let Renderer::Dx9(p,) = &mut st.renderer
+        else
+        {
+            return;
+        };
+        if p.ready()
+        {
+            log_info!("device", "d3d9 device lost, painter kept until Reset");
+        }
+        p.mark_lost();
+        st.d3d9_retry_at = None;
     },);
 }
 
@@ -948,7 +1049,7 @@ pub unsafe fn on_device_lost(sc_raw: *mut c_void,) {
         log_info!("device", "lost/reset, dropping backend");
         st.renderer = Renderer::None;
         st.renderer_failed = false;
-        st.pending_tex.clear();
+        st.clear_pending();
         st.last_prims = None;
         st.ctx = Overlay::make_ctx();
         if st.note_fail()

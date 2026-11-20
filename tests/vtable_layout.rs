@@ -315,5 +315,57 @@ fn d3d9_vtable_slots_are_what_we_hook() {
         assert_eq!(find_slot(device.as_raw(), present, 128,), 17, "Present slot");
         assert_eq!(find_slot(device.as_raw(), reset, 128,), 16, "Reset slot");
         assert_eq!(find_slot(device.as_raw(), end_scene, 128,), 42, "EndScene slot");
+
+        // a D3D9Ex game switches resolution with ResetEx, never with Reset
+        let Ok(d3d_ex) = windows::Win32::Graphics::Direct3D9::Direct3DCreate9Ex(32,) else
+        {
+            eprintln!("Direct3DCreate9Ex failed, skipping ResetEx check");
+            return;
+        };
+        let mut params_ex = D3DPRESENT_PARAMETERS {
+            BackBufferWidth:      64,
+            BackBufferHeight:     64,
+            BackBufferFormat:     D3DFMT_A8R8G8B8,
+            BackBufferCount:      1,
+            MultiSampleType:      D3DMULTISAMPLE_NONE,
+            SwapEffect:           D3DSWAPEFFECT_DISCARD,
+            hDeviceWindow:        HWND(win.hwnd,),
+            Windowed:             BOOL(1,),
+            PresentationInterval: D3DPRESENT_INTERVAL_IMMEDIATE as u32,
+            ..Default::default()
+        };
+        let mut ex: Option<windows::Win32::Graphics::Direct3D9::IDirect3DDevice9Ex,> = None;
+        if d3d_ex
+            .CreateDeviceEx(
+                0,
+                D3DDEVTYPE_HAL,
+                HWND(win.hwnd,),
+                D3DCREATE_SOFTWARE_VERTEXPROCESSING as u32,
+                &mut params_ex,
+                std::ptr::null_mut(),
+                &mut ex,
+            )
+            .is_err()
+        {
+            eprintln!("CreateDeviceEx failed, skipping ResetEx check");
+            return;
+        }
+        let Some(ex,) = ex
+        else
+        {
+            return;
+        };
+        let ex_vtable = *(ex.as_raw() as *const usize);
+        let reset_ex = fn_at(
+            ex_vtable,
+            std::mem::offset_of!(windows::Win32::Graphics::Direct3D9::IDirect3DDevice9Ex_Vtbl, ResetEx),
+        );
+        let reset_ex_slot = std::mem::offset_of!(
+            windows::Win32::Graphics::Direct3D9::IDirect3DDevice9Ex_Vtbl,
+            ResetEx
+        ) / std::mem::size_of::<usize,>();
+        println!("d3d9ex ResetEx 0x{reset_ex:X} slot {reset_ex_slot}");
+        // the Ex vtable is longer than the base one: ResetEx sits past 128
+        assert_eq!(find_slot(ex.as_raw(), reset_ex, 160,), reset_ex_slot, "ResetEx slot");
     }
 }
